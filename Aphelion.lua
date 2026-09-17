@@ -9262,163 +9262,28 @@ AphelionSafeNotify(
 
 
 --[[==========================================================================
-    APHELION // INDEPENDENT UI
-    Public UI library: Fluent (no watermark)
+    FITTING ROOM // MOBILE-FIRST CATALOG UI
 
-    The animation/emote catalog backend remains the original dynamic system:
-      - AnimationSniper.json
-      - AnimationSniperoffsale.json
-      - EmoteSniper.json
-      - bundle -> Animation object resolution
+    This replaces the old Fluent presentation with a native Roblox UI that is:
+      - mobile-first and touch friendly
+      - responsive from phones to PC
+      - thumbnail driven (BundleThumbnail + AssetThumbnail)
+      - lightweight: only the visible page is rendered
+      - built for the Fitting Room game, not an executor-only window
 
-    This layer replaces the old SettingsLib/Roblox EmotesWheel presentation
-    with a standalone Fluent-based window.
+    The existing Aphelion backend remains the data/playback layer.
 ============================================================================]]
 
 getgenv().APHELION_STANDALONE_UI = true
+local APHELION_UI_VERSION = "4.0.0"
 
-local APHELION_FLUENT_URL = "https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"
-local APHELION_UI_VERSION = "3.0.0"
+-- Retire any previous UI instance created by this file.
+pcall(function()
+    local pg = Players.LocalPlayer and Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    local old = pg and pg:FindFirstChild("FittingRoomCatalog")
+    if old then old:Destroy() end
+end)
 
-local function APHClampNumber(v, lo, hi, fallback)
-    v = tonumber(v)
-    if not v then return fallback end
-    return math.clamp(v, lo, hi)
-end
-
-local function APHSafeString(v)
-    return tostring(v or "")
-end
-
-local function APHDisplayCount(list)
-    if type(list) ~= "table" then
-        return 0
-    end
-    local n = 0
-    for _, item in ipairs(list) do
-        if type(item) == "table" and tonumber(item.id) then
-            n += 1
-        end
-    end
-    return n
-end
-
-local function APHGetCurrentList(kind)
-    if kind == "animation" then
-        return State.filteredAnimations or State.originalAnimationsData or State.animationsData or {}
-    end
-    return State.filteredEmotes or State.originalEmotesData or State.emotesData or {}
-end
-
-local function APHGetSearch(kind)
-    return kind == "animation" and (State.animationSearchTerm or "") or (State.emoteSearchTerm or "")
-end
-
-local function APHSetSearch(kind, text)
-    text = APHSafeString(text)
-    if kind == "animation" then
-        State.animationSearchTerm = text
-        AphelionSearchAnimations(text)
-    else
-        State.emoteSearchTerm = text
-        AphelionSearchEmotes(text)
-    end
-end
-
-local function APHIsFavorite(kind, item)
-    if type(item) ~= "table" then return false end
-    return pcall(function() end) and (function()
-        if kind == "animation" then
-            return isInFavorites(item.id)
-        end
-        return isInFavorites(item.id)
-    end)()
-end
-
-local function APHToggleFavorite(kind, item)
-    if type(item) ~= "table" then return false end
-    local ok = false
-    if kind == "animation" then
-        ok = pcall(toggleFavoriteAnimation, item)
-    else
-        ok = pcall(toggleFavorite, item.id, item.name)
-    end
-    return ok
-end
-
-local function APHPlayItem(kind, item)
-    if type(item) ~= "table" then return false end
-
-    if kind == "animation" then
-        if type(applyAnimation) == "function" then
-            local ok = pcall(applyAnimation, item)
-            if ok then
-                return true
-            end
-        end
-        return false
-    end
-
-    local _, hum = getCharacterAndHumanoid()
-    if not hum then
-        return false
-    end
-
-    if type(playRandomEmote) == "function" then
-        local ok = pcall(playRandomEmote, hum, item.id)
-        if ok then return true end
-    end
-
-    if type(playEmote) == "function" then
-        local ok = pcall(playEmote, hum, item.id)
-        if ok then return true end
-    end
-
-    return false
-end
-
-local function APHSetSpeed(v)
-    local speed = APHClampNumber(v, 0.1, 4, 1)
-    Config.EmoteSpeed = speed
-    if UI and UI.SpeedBox then
-        UI.SpeedBox.Text = tostring(speed)
-    end
-    if State.currentEmoteTrack and typeof(State.currentEmoteTrack) == "Instance" then
-        pcall(function()
-            State.currentEmoteTrack:AdjustSpeed(speed)
-        end)
-    end
-    pcall(SaveConfig)
-    return speed
-end
-
-local function APHSetSpeedEnabled(v)
-    Config.EmoteSpeedEnabled = v == true
-    State.speedEmoteEnabled = v == true
-    if UI and UI.SpeedBox then
-        UI.SpeedBox.Text = tostring(Config.EmoteSpeed or 1)
-    end
-    pcall(SaveConfig)
-end
-
--- Compatibility proxy for backend functions that still read UI.SpeedBox.
-do
-    local proxyGui = Instance.new("ScreenGui")
-    proxyGui.Name = "AphelionBackendProxy"
-    proxyGui.IgnoreGuiInset = true
-    proxyGui.ResetOnSpawn = false
-    proxyGui.Enabled = false
-    pcall(function() proxyGui.Parent = CoreGui end)
-
-    local speedProxy = Instance.new("TextBox")
-    speedProxy.Name = "SpeedProxy"
-    speedProxy.Text = tostring(Config.EmoteSpeed or 1)
-    speedProxy.Parent = proxyGui
-    UI.SpeedBox = speedProxy
-end
-
--- Hide/destroy the previous SettingsLib presentation. Backend state/functions
--- remain in place; only the presentation layer is retired.
 pcall(function()
     if SettingsLib and SettingsLib.UI then
         SettingsLib.UI.Enabled = false
@@ -9430,448 +9295,821 @@ pcall(function()
     StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.EmotesMenu, false)
 end)
 
--- Load a public, watermark-free UI framework.
-local AphelionFluent = nil
-local fluentOk = false
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer and LocalPlayer:WaitForChild("PlayerGui")
+if not PlayerGui then
+    return
+end
+
+local UIState = {
+    mode = "animation", -- animation / emote / favorite
+    animationPage = 1,
+    emotePage = 1,
+    favoritePage = 1,
+    perPage = 8,
+    search = "",
+    favoriteMode = false,
+    minimized = false,
+    built = false,
+    generation = 0,
+    searchTicket = 0,
+}
+
+local Theme = {
+    Background = Color3.fromRGB(9, 11, 16),
+    Surface = Color3.fromRGB(15, 18, 25),
+    Surface2 = Color3.fromRGB(21, 25, 34),
+    Card = Color3.fromRGB(18, 22, 30),
+    CardHover = Color3.fromRGB(26, 31, 42),
+    Text = Color3.fromRGB(244, 247, 252),
+    Muted = Color3.fromRGB(143, 153, 170),
+    Accent = Color3.fromRGB(85, 172, 255),
+    Accent2 = Color3.fromRGB(131, 87, 255),
+    Good = Color3.fromRGB(74, 222, 168),
+    Border = Color3.fromRGB(54, 63, 78),
+    Danger = Color3.fromRGB(255, 92, 110),
+}
+
+local function new(className, props, parent)
+    local obj = Instance.new(className)
+    for k, v in pairs(props or {}) do
+        obj[k] = v
+    end
+    obj.Parent = parent
+    return obj
+end
+
+local function round(obj, radius)
+    new("UICorner", {CornerRadius = UDim.new(0, radius or 12)}, obj)
+end
+
+local function stroke(obj, color, transparency, thickness)
+    return new("UIStroke", {
+        Color = color or Theme.Border,
+        Transparency = transparency or 0,
+        Thickness = thickness or 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, obj)
+end
+
+local function gradient(obj, c1, c2, rotation)
+    return new("UIGradient", {
+        Color = ColorSequence.new(c1 or Theme.Surface2, c2 or Theme.Surface),
+        Rotation = rotation or 90,
+    }, obj)
+end
+
+local function setText(label, text)
+    label.Text = APHSafeString(text)
+end
+
+local function getBundleThumb(bundleId, size)
+    return AphelionGetBundleThumbnail(bundleId, size or 420, size or 420)
+end
+
+local function getAssetThumb(assetId, size)
+    local id = tonumber(assetId)
+    if not id then return "" end
+    return "rbxthumb://type=Asset&id=" .. tostring(id) .. "&w=" .. tostring(size or 420) .. "&h=" .. tostring(size or 420)
+end
+
+local function getItemThumbnail(kind, item, size)
+    size = size or 420
+    if type(item) ~= "table" then return "" end
+
+    if item.Thumbnail and item.Thumbnail ~= "" then
+        return item.Thumbnail
+    end
+
+    if kind == "animation" then
+        local bundleId = tonumber(item.id)
+        if item.bundledItems and bundleId then
+            return getBundleThumb(bundleId, size)
+        end
+        return getAssetThumb(item.id, size)
+    end
+
+    return getAssetThumb(item.id, size)
+end
+
+local rebuild
+
+local function favoriteFor(kind, item)
+    local ok, result = pcall(function()
+        return APHIsFavorite(kind, item)
+    end)
+    return ok and result == true
+end
+
+local function playItem(kind, item)
+    if UIState.favoriteMode then
+        APHToggleFavorite(kind, item)
+        task.defer(function()
+            UIState.generation += 1
+        end)
+        return
+    end
+
+    local ok = APHPlayItem(kind, item)
+    if ok then
+        AphelionSafeNotify("Fitting Room", "▶ " .. APHSafeString(item.name or "Item"), 2)
+    else
+        AphelionSafeNotify("Fitting Room", "Could not play " .. APHSafeString(item.name or "item"), 3)
+    end
+end
+
+local Screen = new("ScreenGui", {
+    Name = "FittingRoomCatalog",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    DisplayOrder = 500,
+}, PlayerGui)
+
+local RootScale = new("UIScale", {Scale = 1}, Screen)
+local function updateScale()
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    local vp = cam.ViewportSize
+    -- Native sizing is already responsive. UIScale only trims oversized desktop layouts.
+    if vp.X < 500 then
+        RootScale.Scale = math.clamp(vp.X / 430, 0.86, 1)
+    elseif vp.X < 900 then
+        RootScale.Scale = math.clamp(vp.X / 900 + 0.55, 0.85, 1.04)
+    else
+        RootScale.Scale = 1
+    end
+end
+updateScale()
 pcall(function()
-    AphelionFluent = SafeLoad(APHELION_FLUENT_URL, "Fluent UI")
-    fluentOk = type(AphelionFluent) == "table" and type(AphelionFluent.CreateWindow) == "function"
+    workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
 end)
 
-if not fluentOk then
-    AphelionSafeNotify("Aphelion | UI", "❌ Fluent UI failed to load. Backend is still running.", 6)
-else
-    local okWindow, Window = pcall(function()
-        return AphelionFluent:CreateWindow({
-            Title = "APHELION",
-            SubTitle = "FULL ROBLOX ANIMATION CATALOG  •  v" .. APHELION_UI_VERSION,
-            TabWidth = 150,
-            Size = UDim2.fromOffset(780, 570),
-            Acrylic = true,
-            Theme = "Dark",
-            MinimizeKey = Enum.KeyCode.RightControl
-        })
-    end)
+local Main = new("Frame", {
+    Name = "Main",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.new(0.94, 0, 0.91, 0),
+    BackgroundColor3 = Theme.Background,
+    BackgroundTransparency = 0.03,
+}, Screen)
+round(Main, 20)
+stroke(Main, Theme.Border, 0.18, 1.2)
+gradient(Main, Color3.fromRGB(16, 19, 28), Color3.fromRGB(8, 10, 15), 115)
 
-    if okWindow and Window then
-        local Tabs = {}
-        local tabOk = pcall(function()
-            Tabs.Home = Window:AddTab({ Title = "Home", Icon = "home" })
-            Tabs.Animations = Window:AddTab({ Title = "Animations", Icon = "play" })
-            Tabs.Emotes = Window:AddTab({ Title = "Emotes", Icon = "smile" })
-            Tabs.Favorites = Window:AddTab({ Title = "Favorites", Icon = "heart" })
-            Tabs.Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
-        end)
+local Top = new("Frame", {
+    Name = "Top",
+    Size = UDim2.new(1, -20, 0, 58),
+    Position = UDim2.fromOffset(10, 10),
+    BackgroundTransparency = 1,
+}, Main)
 
-        if tabOk then
-            local Dynamic = {
-                Animation = {},
-                Emote = {},
-                Favorites = {},
-                Static = {},
-            }
+local Brand = new("TextLabel", {
+    Size = UDim2.new(0, 210, 0, 27),
+    Position = UDim2.fromOffset(4, 1),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.GothamBold,
+    Text = "FITTING ROOM",
+    TextSize = 21,
+    TextColor3 = Theme.Text,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, Top)
 
-            local AnimationSearchInput
-            local EmoteSearchInput
-            local AnimationStatus
-            local EmoteStatus
-            local HomeStatus
-            local FavoriteStatus
-            local listGeneration = 0
-            local rebuildFavorites
+local SubBrand = new("TextLabel", {
+    Size = UDim2.new(0, 300, 0, 18),
+    Position = UDim2.fromOffset(5, 31),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.GothamMedium,
+    Text = "ANIMATIONS  •  EMOTES  •  YOUR STYLE",
+    TextSize = 10,
+    TextColor3 = Theme.Muted,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, Top)
 
-            local function destroyDynamic(bucket)
-                for i = #bucket, 1, -1 do
-                    local obj = bucket[i]
-                    bucket[i] = nil
-                    pcall(function()
-                        if type(obj) == "table" and type(obj.Destroy) == "function" then
-                            obj:Destroy()
-                        elseif typeof(obj) == "Instance" then
-                            obj:Destroy()
-                        end
-                    end)
-                end
-            end
+local function topButton(text, color)
+    local b = new("TextButton", {
+        AutoButtonColor = false,
+        BackgroundColor3 = color or Theme.Surface2,
+        Text = text,
+        TextColor3 = Theme.Text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 15,
+    }, Top)
+    round(b, 12)
+    stroke(b, Theme.Border, 0.25, 1)
+    return b
+end
 
-            local function safeParagraph(tab, title, content)
-                local ok, result = pcall(function()
-                    return tab:AddParagraph({ Title = title, Content = content })
-                end)
-                if ok then return result end
-                return nil
-            end
+local MinBtn = topButton("—", Theme.Surface2)
+MinBtn.AnchorPoint = Vector2.new(1, 0)
+MinBtn.Position = UDim2.new(1, -48, 0, 2)
+MinBtn.Size = UDim2.fromOffset(42, 42)
 
-            local function setParagraph(paragraph, title, content)
-                if not paragraph then return end
-                pcall(function()
-                    if paragraph.SetTitle then paragraph:SetTitle(title) end
-                    if paragraph.SetContent then paragraph:SetContent(content) end
-                    if paragraph.SetText then paragraph:SetText(content) end
-                end)
-            end
+local CloseBtn = topButton("×", Color3.fromRGB(38, 23, 29))
+CloseBtn.AnchorPoint = Vector2.new(1, 0)
+CloseBtn.Position = UDim2.new(1, 0, 0, 2)
+CloseBtn.Size = UDim2.fromOffset(42, 42)
 
-            local function addButton(tab, bucket, title, description, callback)
-                local ok, result = pcall(function()
-                    return tab:AddButton({
-                        Title = title,
-                        Description = description,
-                        Callback = callback,
-                    })
-                end)
-                if ok and result then
-                    table.insert(bucket, result)
-                    return result
-                end
-                return nil
-            end
+local Tabs = new("Frame", {
+    Name = "Tabs",
+    Size = UDim2.new(1, -20, 0, 43),
+    Position = UDim2.fromOffset(10, 72),
+    BackgroundTransparency = 1,
+}, Main)
 
-            local function currentStats()
-                return APHDisplayCount(State.originalAnimationsData or State.animationsData),
-                       APHDisplayCount(State.originalEmotesData or State.emotesData)
-            end
+local TabLayout = new("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding = UDim.new(0, 7),
+    HorizontalAlignment = Enum.HorizontalAlignment.Left,
+    VerticalAlignment = Enum.VerticalAlignment.Center,
+}, Tabs)
 
-            local function playOrFavorite(kind, item)
-                if State.favoriteEnabled then
-                    APHToggleFavorite(kind, item)
-                    task.defer(function()
-                        pcall(function() rebuildKind(kind) end)
-                        pcall(rebuildFavorites)
-                    end)
-                    return
-                end
-                local success = APHPlayItem(kind, item)
-                if success then
-                    AphelionSafeNotify("Aphelion", "▶ " .. APHSafeString(item.name), 2)
-                else
-                    AphelionSafeNotify("Aphelion", "❌ Could not play " .. APHSafeString(item.name), 3)
-                end
-            end
+local TabButtons = {}
+local function addTab(id, title)
+    local b = new("TextButton", {
+        Name = id,
+        AutoButtonColor = false,
+        BackgroundColor3 = Theme.Surface2,
+        Size = UDim2.new(0, 130, 1, 0),
+        Text = title,
+        TextColor3 = Theme.Muted,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+    }, Tabs)
+    round(b, 11)
+    stroke(b, Theme.Border, 0.35, 1)
+    TabButtons[id] = b
+    return b
+end
 
-            local function rebuildKind(kind)
-                listGeneration += 1
-                local generation = listGeneration
-                local bucket = kind == "animation" and Dynamic.Animation or Dynamic.Emote
-                destroyDynamic(bucket)
+addTab("Animations", "ANIMATIONS")
+addTab("Emotes", "EMOTES")
+addTab("Favorites", "★ FAVORITES")
 
-                local tab = kind == "animation" and Tabs.Animations or Tabs.Emotes
-                local list = APHGetCurrentList(kind)
-                local page = kind == "animation" and (State.currentAnimationUiPage or 1) or (State.currentEmoteUiPage or 1)
-                local perPage = 10
-                local totalPages = math.max(1, math.ceil(#list / perPage))
-                page = math.clamp(page, 1, totalPages)
+local Tools = new("Frame", {
+    Name = "Tools",
+    Size = UDim2.new(1, -20, 0, 46),
+    Position = UDim2.fromOffset(10, 120),
+    BackgroundTransparency = 1,
+}, Main)
 
-                if kind == "animation" then
-                    State.currentAnimationUiPage = page
-                    setParagraph(AnimationStatus,
-                        "Animation catalog",
-                        string.format("Page %d / %d   •   %d results   •   %s", page, totalPages, #list, APHGetSearch(kind) ~= "" and ("search: " .. APHGetSearch(kind)) or "full catalog"))
-                else
-                    State.currentEmoteUiPage = page
-                    setParagraph(EmoteStatus,
-                        "Emote catalog",
-                        string.format("Page %d / %d   •   %d results   •   %s", page, totalPages, #list, APHGetSearch(kind) ~= "" and ("search: " .. APHGetSearch(kind)) or "full catalog"))
-                end
+local SearchBox = new("TextBox", {
+    Name = "Search",
+    Size = UDim2.new(1, -150, 1, 0),
+    Position = UDim2.fromOffset(0, 0),
+    BackgroundColor3 = Theme.Surface,
+    TextColor3 = Theme.Text,
+    PlaceholderColor3 = Theme.Muted,
+    PlaceholderText = "Search animations, emotes or IDs...",
+    ClearTextOnFocus = false,
+    Text = "",
+    Font = Enum.Font.Gotham,
+    TextSize = 13,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, Tools)
+round(SearchBox, 12)
+stroke(SearchBox, Theme.Border, 0.2, 1)
+new("UIPadding", {PaddingLeft = UDim.new(0, 15), PaddingRight = UDim.new(0, 12)}, SearchBox)
 
-                local first = (page - 1) * perPage + 1
-                local last = math.min(#list, first + perPage - 1)
+local FavModeBtn = new("TextButton", {
+    Name = "FavoriteMode",
+    AutoButtonColor = false,
+    Size = UDim2.fromOffset(140, 46),
+    Position = UDim2.new(1, -140, 0, 0),
+    BackgroundColor3 = Theme.Surface2,
+    Text = "☆  FAVORITE MODE",
+    TextColor3 = Theme.Muted,
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+}, Tools)
+round(FavModeBtn, 12)
+stroke(FavModeBtn, Theme.Border, 0.25, 1)
 
-                if first > #list then
-                    return
-                end
+local Info = new("Frame", {
+    Name = "Info",
+    Size = UDim2.new(1, -20, 0, 30),
+    Position = UDim2.fromOffset(10, 172),
+    BackgroundTransparency = 1,
+}, Main)
 
-                for index = first, last do
-                    if generation ~= listGeneration then
-                        return
-                    end
-                    local item = list[index]
-                    local fav = APHIsFavorite(kind, item)
-                    local icon = fav and "★" or "☆"
-                    local name = APHSafeString(item.name or ((kind == "animation" and "Animation" or "Emote") .. " " .. APHSafeString(item.id)))
-                    if #name > 56 then
-                        name = name:sub(1, 53) .. "..."
-                    end
+local Status = new("TextLabel", {
+    Size = UDim2.new(1, -145, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "Loading catalog...",
+    TextColor3 = Theme.Muted,
+    Font = Enum.Font.GothamMedium,
+    TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, Info)
 
-                    local description
-                    if kind == "animation" then
-                        description = "ID " .. APHSafeString(item.id)
-                            .. "  •  " .. (item.bundledItems and "Bundle" or "Animation")
-                            .. (item.offsale and "  •  OFFSALE" or "")
-                    else
-                        description = "ID " .. APHSafeString(item.id) .. "  •  Emote"
-                    end
+local Utility = new("Frame", {
+    Size = UDim2.fromOffset(138, 30),
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, 0, 0, 0),
+    BackgroundTransparency = 1,
+}, Info)
+local UtilLayout = new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right, Padding = UDim.new(0, 6)}, Utility)
 
-                    addButton(tab, bucket, icon .. "  " .. name, description, function()
-                        playOrFavorite(kind, item)
-                    end)
-                end
+local RandomBtn = new("TextButton", {
+    AutoButtonColor = false,
+    Size = UDim2.fromOffset(65, 30),
+    BackgroundColor3 = Theme.Surface2,
+    Text = "RANDOM",
+    TextColor3 = Theme.Text,
+    Font = Enum.Font.GothamBold,
+    TextSize = 9,
+}, Utility)
+round(RandomBtn, 9)
 
-                addButton(tab, bucket, "← PREVIOUS", "Go to the previous catalog page", function()
-                    local p = (kind == "animation" and State.currentAnimationUiPage or State.currentEmoteUiPage or 1)
-                    p -= 1
-                    if p < 1 then p = totalPages end
-                    if kind == "animation" then State.currentAnimationUiPage = p else State.currentEmoteUiPage = p end
-                    rebuildKind(kind)
-                end)
+local StopBtn = new("TextButton", {
+    AutoButtonColor = false,
+    Size = UDim2.fromOffset(65, 30),
+    BackgroundColor3 = Color3.fromRGB(39, 24, 31),
+    Text = "STOP",
+    TextColor3 = Theme.Danger,
+    Font = Enum.Font.GothamBold,
+    TextSize = 9,
+}, Utility)
+round(StopBtn, 9)
 
-                addButton(tab, bucket, "NEXT →", "Go to the next catalog page", function()
-                    local p = (kind == "animation" and State.currentAnimationUiPage or State.currentEmoteUiPage or 1)
-                    p += 1
-                    if p > totalPages then p = 1 end
-                    if kind == "animation" then State.currentAnimationUiPage = p else State.currentEmoteUiPage = p end
-                    rebuildKind(kind)
-                end)
-            end
+local List = new("ScrollingFrame", {
+    Name = "Catalog",
+    Size = UDim2.new(1, -20, 1, -270),
+    Position = UDim2.fromOffset(10, 207),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    CanvasSize = UDim2.fromOffset(0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    ScrollBarThickness = 4,
+    ScrollBarImageColor3 = Theme.Accent,
+}, Main)
 
-            -- HOME ----------------------------------------------------------------
-            safeParagraph(Tabs.Home, "APHELION", "Independent animation/emote interface • Fluent UI • No watermark")
-            HomeStatus = safeParagraph(Tabs.Home, "Catalog status", "Loading Roblox catalog...")
+local ListPad = new("UIPadding", {
+    PaddingLeft = UDim.new(0, 1), PaddingRight = UDim.new(0, 1),
+    PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 6),
+}, List)
 
-            addButton(Tabs.Home, Dynamic.Static, "🔄 REFRESH FULL CATALOG", "Reload animations + emotes and refresh thumbnails", function()
-                AphelionRefreshCatalog("ui-refresh", true)
-                task.delay(1.2, function()
-                    setParagraph(HomeStatus, "Catalog status", "Refresh requested • animations: " .. APHDisplayCount(State.originalAnimationsData) .. " • emotes: " .. APHDisplayCount(State.originalEmotesData))
-                    rebuildKind("animation")
-                    rebuildKind("emote")
-                end)
-            end)
+local Grid = new("UIGridLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    CellPadding = UDim2.fromOffset(8, 8),
+    CellSize = UDim2.fromOffset(260, 116),
+}, List)
 
-            addButton(Tabs.Home, Dynamic.Static, "🎲 RANDOM", "Play a random catalog item", function()
-                local kind = (State.currentMode == "animation") and "animation" or "emote"
-                local list = APHGetCurrentList(kind)
-                if #list == 0 then
-                    AphelionSafeNotify("Aphelion", "⏳ Catalog is still loading.", 3)
-                    return
-                end
-                local item = list[math.random(1, #list)]
-                APHPlayItem(kind, item)
-                AphelionSafeNotify("Aphelion | Random", item.name, 2)
-            end)
+local Bottom = new("Frame", {
+    Size = UDim2.new(1, -20, 0, 44),
+    Position = UDim2.new(0, 10, 1, -54),
+    BackgroundTransparency = 1,
+}, Main)
 
-            addButton(Tabs.Home, Dynamic.Static, "⏹ STOP CURRENT", "Stop the current emote track", function()
-                stopCurrentEmote()
-            end)
+local PrevBtn = new("TextButton", {
+    AutoButtonColor = false, Size = UDim2.fromOffset(82, 44),
+    BackgroundColor3 = Theme.Surface2, Text = "‹  PREV", TextColor3 = Theme.Text,
+    Font = Enum.Font.GothamBold, TextSize = 10,
+}, Bottom)
+round(PrevBtn, 11)
 
-            pcall(function()
-                Tabs.Home:AddToggle("FavoriteModeHome", {
-                    Title = "Favorite mode",
-                    Description = "Clicking a catalog item adds/removes it from favorites instead of playing it.",
-                    Default = false,
-                }):OnChanged(function(v)
-                    State.favoriteEnabled = v == true
-                end)
-            end)
+local PageLabel = new("TextLabel", {
+    Size = UDim2.new(1, -180, 1, 0), Position = UDim2.fromOffset(90, 0),
+    BackgroundTransparency = 1, Text = "PAGE 1 / 1", TextColor3 = Theme.Muted,
+    Font = Enum.Font.GothamBold, TextSize = 11,
+}, Bottom)
 
-            pcall(function()
-                Tabs.Home:AddToggle("SpeedEnabledHome", {
-                    Title = "Emote speed",
-                    Description = "Apply the speed value when playing emotes.",
-                    Default = Config.EmoteSpeedEnabled == true,
-                }):OnChanged(APHSetSpeedEnabled)
+local NextBtn = new("TextButton", {
+    AutoButtonColor = false, Size = UDim2.fromOffset(82, 44),
+    AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0),
+    BackgroundColor3 = Theme.Surface2, Text = "NEXT  ›", TextColor3 = Theme.Text,
+    Font = Enum.Font.GothamBold, TextSize = 10,
+}, Bottom)
+round(NextBtn, 11)
 
-                Tabs.Home:AddInput("SpeedHome", {
-                    Title = "Speed",
-                    Description = "0.1x to 4x",
-                    Default = tostring(Config.EmoteSpeed or 1),
-                    Placeholder = "1.0",
-                    Numeric = true,
-                    Finished = true,
-                    Callback = function(v)
-                        APHSetSpeed(v)
-                    end,
-                })
-            end)
+local FloatingOpen = new("TextButton", {
+    Name = "OpenButton",
+    Visible = false,
+    AnchorPoint = Vector2.new(1, 1),
+    Position = UDim2.new(1, -14, 1, -14),
+    Size = UDim2.fromOffset(56, 56),
+    BackgroundColor3 = Theme.Surface2,
+    Text = "FR",
+    TextColor3 = Theme.Text,
+    Font = Enum.Font.GothamBold,
+    TextSize = 16,
+}, Screen)
+round(FloatingOpen, 28)
+stroke(FloatingOpen, Theme.Accent, 0.1, 1.5)
 
-            -- ANIMATIONS -------------------------------------------------------
-            AnimationStatus = safeParagraph(Tabs.Animations, "Animation catalog", "Waiting for catalog...")
-            local animInputOk
-            animInputOk, AnimationSearchInput = pcall(function()
-                return Tabs.Animations:AddInput("AnimationSearch", {
-                    Title = "Search animations",
-                    Description = "Search by name or exact bundle ID",
-                    Default = "",
-                    Placeholder = "Search the full catalog...",
-                    Callback = function(value)
-                        APHSetSearch("animation", value)
-                        State.currentAnimationUiPage = 1
-                        rebuildKind("animation")
-                    end,
-                })
-            end)
-            if not animInputOk then AnimationSearchInput = nil end
+local function resizeGrid()
+    local width = math.max(200, List.AbsoluteSize.X - 2)
+    local gap = 8
+    local minWidth = 188
+    local columns = math.clamp(math.floor((width + gap) / (minWidth + gap)), 1, 4)
+    local cellWidth = math.floor((width - gap * (columns - 1)) / columns)
+    local mobile = width < 420
+    Grid.CellSize = UDim2.fromOffset(math.max(170, cellWidth), mobile and 112 or 116)
+    Grid.FillDirectionMaxCells = columns
+end
+resizeGrid()
+List:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeGrid)
 
-            addButton(Tabs.Animations, Dynamic.Static, "↻ CLEAR SEARCH", "Show every animation again", function()
-                APHSetSearch("animation", "")
-                State.currentAnimationUiPage = 1
-                rebuildKind("animation")
-            end)
-
-            -- EMOTES -----------------------------------------------------------
-            EmoteStatus = safeParagraph(Tabs.Emotes, "Emote catalog", "Waiting for catalog...")
-            local emoteInputOk
-            emoteInputOk, EmoteSearchInput = pcall(function()
-                return Tabs.Emotes:AddInput("EmoteSearch", {
-                    Title = "Search emotes",
-                    Description = "Search by name or exact asset ID",
-                    Default = "",
-                    Placeholder = "Search emotes...",
-                    Callback = function(value)
-                        APHSetSearch("emote", value)
-                        State.currentEmoteUiPage = 1
-                        rebuildKind("emote")
-                    end,
-                })
-            end)
-            if not emoteInputOk then EmoteSearchInput = nil end
-
-            addButton(Tabs.Emotes, Dynamic.Static, "↻ CLEAR SEARCH", "Show every emote again", function()
-                APHSetSearch("emote", "")
-                State.currentEmoteUiPage = 1
-                rebuildKind("emote")
-            end)
-
-            -- FAVORITES --------------------------------------------------------
-            FavoriteStatus = safeParagraph(Tabs.Favorites, "Favorites", "Loading favorites...")
-
-            rebuildFavorites = function()
-                destroyDynamic(Dynamic.Favorites)
-                local aFav = State.favoriteAnimations or {}
-                local eFav = State.favoriteEmotes or {}
-                setParagraph(FavoriteStatus, "Favorites", string.format("Animations: %d   •   Emotes: %d", #aFav, #eFav))
-
-                for _, item in ipairs(aFav) do
-                    addButton(Tabs.Favorites, Dynamic.Favorites,
-                        "★  " .. APHSafeString(item.name),
-                        "Animation ID " .. APHSafeString(item.id),
-                        function()
-                            APHPlayItem("animation", item)
-                        end)
-                end
-
-                for _, item in ipairs(eFav) do
-                    addButton(Tabs.Favorites, Dynamic.Favorites,
-                        "★  " .. APHSafeString(item.name),
-                        "Emote ID " .. APHSafeString(item.id),
-                        function()
-                            APHPlayItem("emote", item)
-                        end)
-                end
-
-                if #aFav == 0 and #eFav == 0 then
-                    addButton(Tabs.Favorites, Dynamic.Favorites,
-                        "No favorites yet",
-                        "Turn on Favorite mode in Home and click catalog items.",
-                        function() end)
-                end
-            end
-
-            addButton(Tabs.Favorites, Dynamic.Static, "🔄 REFRESH FAVORITES", "Rebuild the favorites list", function()
-                rebuildFavorites()
-            end)
-
-            -- SETTINGS ---------------------------------------------------------
-            safeParagraph(Tabs.Settings, "Catalog", "Control what Aphelion loads and how often it refreshes.")
-
-            pcall(function()
-                Tabs.Settings:AddToggle("Offsale", {
-                    Title = "Include off-sale animations",
-                    Description = "Include AnimationSniperoffsale.json in the catalog.",
-                    Default = Config.IncludeOffsaleAnimations ~= false,
-                }):OnChanged(function(v)
-                    AphelionSetOffsaleAnimationsEnabled(v, true)
-                end)
-
-                Tabs.Settings:AddToggle("AutoRefresh", {
-                    Title = "Automatic catalog refresh",
-                    Description = "Refresh the dynamic catalog on a timer.",
-                    Default = Config.CatalogAutoRefresh ~= false,
-                }):OnChanged(function(v)
-                    Config.CatalogAutoRefresh = v == true
-                    pcall(SaveConfig)
-                end)
-
-                Tabs.Settings:AddInput("RefreshMinutes", {
-                    Title = "Refresh interval (minutes)",
-                    Description = "Minimum 5 minutes",
-                    Default = tostring(Config.CatalogRefreshMinutes or 15),
-                    Numeric = true,
-                    Finished = true,
-                    Callback = function(v)
-                        Config.CatalogRefreshMinutes = APHClampNumber(v, 5, 240, 15)
-                        pcall(SaveConfig)
-                    end,
-                })
-
-                Tabs.Settings:AddToggle("Notifications", {
-                    Title = "Notifications",
-                    Description = "Show Aphelion status notifications.",
-                    Default = Config.NotifyEnabled ~= false,
-                }):OnChanged(function(v)
-                    Config.NotifyEnabled = v == true
-                    pcall(SaveConfig)
-                end)
-            end)
-
-            addButton(Tabs.Settings, Dynamic.Static, "📦 PRELOAD THUMBNAILS", "Preload the first batch of animation bundle thumbnails", function()
-                AphelionPreloadAnimationThumbnails(APHClampNumber(Config.ThumbnailPreloadCount, 1, 128, 48))
-                AphelionSafeNotify("Aphelion | Thumbnails", "Thumbnail preload started.", 3)
-            end)
-
-            addButton(Tabs.Settings, Dynamic.Static, "💾 EXPORT CATALOG SNAPSHOT", "Build a current catalog snapshot through the public Aphelion API", function()
-                local snapshot = AphelionExportCatalogSnapshot()
-                if snapshot then
-                    AphelionSafeNotify("Aphelion | Snapshot", "Animations: " .. #snapshot.Animations .. " • Emotes: " .. #snapshot.Emotes, 4)
-                end
-            end)
-
-            -- First render; data is fetched asynchronously by the backend.
-            task.spawn(function()
-                local attempts = 0
-                while attempts < 40 do
-                    local a = APHDisplayCount(State.originalAnimationsData or State.animationsData)
-                    local e = APHDisplayCount(State.originalEmotesData or State.emotesData)
-                    if a > 0 or e > 0 then
-                        break
-                    end
-                    attempts += 1
-                    task.wait(0.5)
-                end
-
-                local a, e = currentStats()
-                setParagraph(HomeStatus, "Catalog status", "Animations: " .. a .. "  •  Emotes: " .. e .. "  •  Dynamic sources active")
-                rebuildKind("animation")
-                rebuildKind("emote")
-                rebuildFavorites()
-            end)
-
-            -- Keep the independent UI synced with the existing backend refreshes.
-            task.spawn(function()
-                local lastA, lastE = -1, -1
-                while true do
-                    task.wait(2)
-                    local a, e = currentStats()
-                    if a ~= lastA or e ~= lastE then
-                        lastA, lastE = a, e
-                        setParagraph(HomeStatus, "Catalog status", "Animations: " .. a .. "  •  Emotes: " .. e .. "  •  Dynamic sources active")
-                        pcall(function() rebuildKind("animation") end)
-                        pcall(function() rebuildKind("emote") end)
-                        pcall(rebuildFavorites)
-                    end
-                end
-            end)
-
-            AphelionSafeNotify(
-                "APHELION | UI",
-                "✨ Independent Fluent UI loaded • full dynamic catalog preserved • no Rayfield / no watermark",
-                5
-            )
+local function clearCards()
+    for _, child in ipairs(List:GetChildren()) do
+        if child:IsA("Frame") or child:IsA("TextButton") then
+            child:Destroy()
         end
     end
 end
 
--- Make the public API explicit for the independent UI.
+local function makeCard(kind, item, layoutOrder)
+    local card = new("Frame", {
+        LayoutOrder = layoutOrder,
+        BackgroundColor3 = Theme.Card,
+        BorderSizePixel = 0,
+    }, List)
+    round(card, 14)
+    stroke(card, Theme.Border, 0.38, 1)
+    gradient(card, Color3.fromRGB(26, 31, 42), Color3.fromRGB(14, 17, 23), 35)
+
+    local thumbHolder = new("Frame", {
+        Size = UDim2.fromOffset(92, 92),
+        Position = UDim2.fromOffset(10, 12),
+        BackgroundColor3 = Color3.fromRGB(10, 12, 17),
+        BorderSizePixel = 0,
+    }, card)
+    round(thumbHolder, 12)
+    stroke(thumbHolder, Theme.Border, 0.35, 1)
+
+    local thumb = new("ImageLabel", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Image = getItemThumbnail(kind, item, 420),
+        ScaleType = Enum.ScaleType.Crop,
+    }, thumbHolder)
+    round(thumb, 12)
+
+    local loading = new("TextLabel", {
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+        Text = "• • •", TextColor3 = Theme.Muted,
+        Font = Enum.Font.GothamBold, TextSize = 14,
+    }, thumbHolder)
+    task.spawn(function()
+        local image = thumb.Image
+        if image == "" then
+            loading.Text = "NO PREVIEW"
+            loading.TextSize = 8
+        else
+            pcall(function()
+                ContentProvider:PreloadAsync({thumb})
+            end)
+            if thumb.Image ~= "" then
+                loading.Visible = false
+            end
+        end
+    end)
+
+    local fav = new("TextButton", {
+        AutoButtonColor = false,
+        Size = UDim2.fromOffset(34, 34),
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -8, 0, 8),
+        BackgroundColor3 = Color3.fromRGB(10, 12, 17),
+        BackgroundTransparency = 0.08,
+        Text = favoriteFor(kind, item) and "★" or "☆",
+        TextColor3 = favoriteFor(kind, item) and Theme.Accent or Theme.Muted,
+        Font = Enum.Font.GothamBold,
+        TextSize = 17,
+    }, card)
+    round(fav, 10)
+
+    local contentX = 114
+    local title = APHSafeString(item.name or ((kind == "animation" and "Animation" or "Emote") .. " " .. APHSafeString(item.id)))
+    if #title > 38 then title = title:sub(1, 35) .. "..." end
+
+    local titleLabel = new("TextLabel", {
+        Size = UDim2.new(1, -contentX - 8, 0, 38),
+        Position = UDim2.fromOffset(contentX, 12),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = Theme.Text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+    }, card)
+
+    local typeText = (kind == "animation" and (item.bundledItems and "BUNDLE" or "ANIMATION") or "EMOTE")
+    local meta = new("TextLabel", {
+        Size = UDim2.new(1, -contentX - 8, 0, 28),
+        Position = UDim2.fromOffset(contentX, 53),
+        BackgroundTransparency = 1,
+        Text = typeText .. "  •  ID " .. APHSafeString(item.id) .. (item.offsale and "  •  OFFSALE" or ""),
+        TextColor3 = item.offsale and Color3.fromRGB(247, 183, 83) or Theme.Muted,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 9,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+    }, card)
+
+    local action = new("TextButton", {
+        AutoButtonColor = false,
+        Size = UDim2.new(1, -contentX - 8, 0, 28),
+        Position = UDim2.fromOffset(contentX, 80),
+        BackgroundColor3 = Theme.Surface2,
+        Text = UIState.favoriteMode and "ADD TO FAVORITES" or "PLAY",
+        TextColor3 = UIState.favoriteMode and Theme.Accent or Theme.Good,
+        Font = Enum.Font.GothamBold,
+        TextSize = 9,
+    }, card)
+    round(action, 8)
+
+    local function activate()
+        playItem(kind, item)
+        task.defer(function()
+            if UIState.favoriteMode then
+                rebuild()
+            end
+        end)
+    end
+
+    action.Activated:Connect(activate)
+    thumb.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            activate()
+        end
+    end)
+    titleLabel.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            activate()
+        end
+    end)
+    fav.Activated:Connect(function()
+        APHToggleFavorite(kind, item)
+        task.defer(rebuild)
+    end)
+
+    return card, thumb
+end
+
+local function favoriteList()
+    local out = {}
+    for _, item in ipairs(State.favoriteAnimations or {}) do
+        table.insert(out, {kind = "animation", item = item})
+    end
+    for _, item in ipairs(State.favoriteEmotes or {}) do
+        table.insert(out, {kind = "emote", item = item})
+    end
+    return out
+end
+
+local function getViewData()
+    if UIState.mode == "favorite" then
+        local source = favoriteList()
+        local q = string.lower(UIState.search or "")
+        if q ~= "" then
+            local filtered = {}
+            for _, entry in ipairs(source) do
+                local text = string.lower(APHSafeString(entry.item.name) .. " " .. APHSafeString(entry.item.id))
+                if string.find(text, q, 1, true) then
+                    table.insert(filtered, entry)
+                end
+            end
+            source = filtered
+        end
+        return source
+    end
+
+    local kind = UIState.mode
+    return APHGetCurrentList(kind)
+end
+
+local function getPage()
+    if UIState.mode == "animation" then return UIState.animationPage end
+    if UIState.mode == "emote" then return UIState.emotePage end
+    return UIState.favoritePage
+end
+
+local function setPage(page)
+    if UIState.mode == "animation" then UIState.animationPage = page
+    elseif UIState.mode == "emote" then UIState.emotePage = page
+    else UIState.favoritePage = page end
+end
+
+rebuild = function()
+    if not Main.Parent then return end
+    UIState.generation += 1
+    local generation = UIState.generation
+    clearCards()
+
+    local data = getViewData()
+    local total = #data
+    local perPage = UIState.perPage
+    local pages = math.max(1, math.ceil(total / perPage))
+    local page = math.clamp(getPage(), 1, pages)
+    setPage(page)
+
+    local query = UIState.search ~= "" and ('  •  "' .. UIState.search .. '"') or ""
+    local modeName = UIState.mode == "animation" and "ANIMATIONS" or UIState.mode == "emote" and "EMOTES" or "FAVORITES"
+    Status.Text = modeName .. "  •  " .. tostring(total) .. " ITEMS" .. query
+    PageLabel.Text = "PAGE " .. tostring(page) .. " / " .. tostring(pages)
+
+    if total == 0 then
+        local empty = new("Frame", {
+            Size = UDim2.new(1, -4, 0, 165),
+            BackgroundColor3 = Theme.Card,
+            BorderSizePixel = 0,
+        }, List)
+        round(empty, 16)
+        local e1 = new("TextLabel", {Size = UDim2.new(1, -30, 0, 34), Position = UDim2.fromOffset(15, 42), BackgroundTransparency = 1, Text = "NOTHING HERE YET", TextColor3 = Theme.Text, Font = Enum.Font.GothamBold, TextSize = 17}, empty)
+        local e2 = new("TextLabel", {Size = UDim2.new(1, -40, 0, 38), Position = UDim2.fromOffset(20, 82), BackgroundTransparency = 1, Text = "Try another search, refresh the catalog, or add favorites.", TextColor3 = Theme.Muted, Font = Enum.Font.GothamMedium, TextSize = 11, TextWrapped = true}, empty)
+        Grid.CellSize = UDim2.new(1, -4, 0, 165)
+        return
+    end
+
+    resizeGrid()
+    local first = (page - 1) * perPage + 1
+    local last = math.min(total, first + perPage - 1)
+    local order = 0
+    for i = first, last do
+        if generation ~= UIState.generation then return end
+        local entry = data[i]
+        local kind, item
+        if UIState.mode == "favorite" then
+            kind, item = entry.kind, entry.item
+        else
+            kind, item = UIState.mode, entry
+        end
+        order += 1
+        makeCard(kind, item, order)
+    end
+
+    task.spawn(function()
+        -- Preload just the current page: much lighter on mobile memory/network.
+        local batch = {}
+        for _, child in ipairs(List:GetChildren()) do
+            local img = child:FindFirstChild("Frame")
+            if img then
+                local holder = child:FindFirstChildOfClass("Frame")
+                local image = holder and holder:FindFirstChildOfClass("ImageLabel")
+                if image and image.Image ~= "" then
+                    table.insert(batch, image)
+                end
+            end
+        end
+        if #batch > 0 then pcall(function() ContentProvider:PreloadAsync(batch) end) end
+    end)
+end
+
+-- Search is debounced because typing directly into a large catalog should not
+-- rebuild the entire page on every single keystroke.
+SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    UIState.searchTicket += 1
+    local ticket = UIState.searchTicket
+    task.delay(0.18, function()
+        if ticket ~= UIState.searchTicket then return end
+        UIState.search = SearchBox.Text
+        if UIState.mode == "animation" then
+            APHSetSearch("animation", UIState.search)
+            UIState.animationPage = 1
+        elseif UIState.mode == "emote" then
+            APHSetSearch("emote", UIState.search)
+            UIState.emotePage = 1
+        else
+            UIState.favoritePage = 1
+        end
+        rebuild()
+    end)
+end)
+
+for id, button in pairs(TabButtons) do
+    button.Activated:Connect(function()
+        UIState.mode = id == "Animations" and "animation" or id == "Emotes" and "emote" or "favorite"
+        UIState.search = ""
+        SearchBox.Text = ""
+        rebuild()
+    end)
+end
+
+local function refreshTabStyle()
+    for id, button in pairs(TabButtons) do
+        local active = (id == "Animations" and UIState.mode == "animation")
+            or (id == "Emotes" and UIState.mode == "emote")
+            or (id == "Favorites" and UIState.mode == "favorite")
+        button.BackgroundColor3 = active and Color3.fromRGB(29, 49, 75) or Theme.Surface2
+        button.TextColor3 = active and Theme.Accent or Theme.Muted
+    end
+    FavModeBtn.BackgroundColor3 = UIState.favoriteMode and Color3.fromRGB(29, 49, 75) or Theme.Surface2
+    FavModeBtn.TextColor3 = UIState.favoriteMode and Theme.Accent or Theme.Muted
+    FavModeBtn.Text = UIState.favoriteMode and "★  FAVORITE MODE" or "☆  FAVORITE MODE"
+end
+
+FavModeBtn.Activated:Connect(function()
+    UIState.favoriteMode = not UIState.favoriteMode
+    refreshTabStyle()
+    rebuild()
+end)
+
+PrevBtn.Activated:Connect(function()
+    local page = getPage()
+    local data = getViewData()
+    local pages = math.max(1, math.ceil(#data / UIState.perPage))
+    page -= 1
+    if page < 1 then page = pages end
+    setPage(page)
+    rebuild()
+end)
+
+NextBtn.Activated:Connect(function()
+    local page = getPage()
+    local data = getViewData()
+    local pages = math.max(1, math.ceil(#data / UIState.perPage))
+    page += 1
+    if page > pages then page = 1 end
+    setPage(page)
+    rebuild()
+end)
+
+RandomBtn.Activated:Connect(function()
+    local data = getViewData()
+    if #data == 0 then
+        AphelionSafeNotify("Fitting Room", "Catalog is still loading.", 2)
+        return
+    end
+    local entry = data[math.random(1, #data)]
+    if UIState.mode == "favorite" then
+        playItem(entry.kind, entry.item)
+    else
+        playItem(UIState.mode, entry)
+    end
+end)
+
+StopBtn.Activated:Connect(function()
+    pcall(stopCurrentEmote)
+end)
+
+local function setMinimized(v)
+    UIState.minimized = v == true
+    Main.Visible = not UIState.minimized
+    FloatingOpen.Visible = UIState.minimized
+end
+
+MinBtn.Activated:Connect(function()
+    setMinimized(true)
+end)
+
+FloatingOpen.Activated:Connect(function()
+    setMinimized(false)
+end)
+
+CloseBtn.Activated:Connect(function()
+    Screen:Destroy()
+    pcall(function()
+        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.EmotesMenu, true)
+    end)
+end)
+
+-- Keep the UI synced with backend refreshes without rebuilding every frame.
+task.spawn(function()
+    local lastA, lastE, lastFA, lastFE = -1, -1, -1, -1
+    while Screen.Parent do
+        task.wait(2)
+        local a = APHDisplayCount(State.originalAnimationsData or State.animationsData)
+        local e = APHDisplayCount(State.originalEmotesData or State.emotesData)
+        local fa = #(State.favoriteAnimations or {})
+        local fe = #(State.favoriteEmotes or {})
+        if a ~= lastA or e ~= lastE or fa ~= lastFA or fe ~= lastFE then
+            lastA, lastE, lastFA, lastFE = a, e, fa, fe
+            pcall(rebuild)
+        end
+    end
+end)
+
+refreshTabStyle()
+rebuild()
+
+-- Wait briefly for the dynamic backend before forcing the first populated render.
+task.spawn(function()
+    for _ = 1, 30 do
+        if not Screen.Parent then return end
+        local a = APHDisplayCount(State.originalAnimationsData or State.animationsData)
+        local e = APHDisplayCount(State.originalEmotesData or State.emotesData)
+        if a > 0 or e > 0 then
+            rebuild()
+            break
+        end
+        task.wait(0.5)
+    end
+end)
+
 getgenv().Aphelion = getgenv().Aphelion or {}
-getgenv().Aphelion.UILibrary = "Fluent"
+getgenv().Aphelion.UILibrary = "NativeRobloxUI"
 getgenv().Aphelion.UIVersion = APHELION_UI_VERSION
 getgenv().Aphelion.StandaloneUI = true
+getgenv().Aphelion.MobileOptimized = true
+getgenv().Aphelion.ThumbnailUI = true
 
+AphelionSafeNotify(
+    "FITTING ROOM | UI",
+    "✨ Mobile-first catalog loaded • responsive cards • bundle + emote thumbnails",
+    4
+)
