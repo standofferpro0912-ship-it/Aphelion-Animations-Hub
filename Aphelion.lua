@@ -9285,13 +9285,6 @@ pcall(function()
 end)
 
 pcall(function()
-    if SettingsLib and SettingsLib.UI then
-        SettingsLib.UI.Enabled = false
-        SettingsLib.UI:Destroy()
-    end
-end)
-
-pcall(function()
     StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.EmotesMenu, false)
 end)
 
@@ -9299,6 +9292,173 @@ local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer and LocalPlayer:WaitForChild("PlayerGui")
 if not PlayerGui then
     return
+end
+
+-- Compatibility/adaptor layer for the native Fitting Room UI.
+-- The original backend remains intact; these helpers only bridge the UI to
+-- the backend data/playback/favorite systems that already exist above.
+local function APHSafeString(value)
+    if value == nil then return "" end
+    return tostring(value)
+end
+
+local function APHDisplayCount(list)
+    return #(list or {})
+end
+
+local function APHIsFavorite(kind, item)
+    local id = item and item.id
+    if not id then return false end
+    if kind == "animation" then
+        for _, fav in ipairs(State.favoriteAnimations or {}) do
+            if tostring(fav.id) == tostring(id) then return true end
+        end
+    else
+        for _, fav in ipairs(State.favoriteEmotes or {}) do
+            if tostring(fav.id) == tostring(id) then return true end
+        end
+    end
+    return false
+end
+
+local function APHGetCurrentList(kind)
+    if kind == "animation" then
+        return State.filteredAnimations or State.originalAnimationsData or State.animationsData or {}
+    end
+    return State.filteredEmotes or State.originalEmotesData or State.emotesData or {}
+end
+
+local function APHFilterList(list, term)
+    list = list or {}
+    term = string.lower(APHSafeString(term)):match("^%s*(.-)%s*$")
+    if term == "" then return list end
+
+    local out = {}
+    local idSearch = term:match("^%d+$") ~= nil
+    for _, item in ipairs(list) do
+        local ok = false
+        if idSearch then
+            ok = tostring(item.id) == term
+        else
+            local name = string.lower(APHSafeString(item.name))
+            ok = true
+            for word in term:gmatch("%S+") do
+                if not name:find(word, 1, true) and not tostring(item.id):find(word, 1, true) then
+                    ok = false
+                    break
+                end
+            end
+        end
+        if ok then
+            table.insert(out, item)
+        end
+    end
+    return out
+end
+
+local function APHSetSearch(kind, term)
+    term = APHSafeString(term)
+    if kind == "animation" then
+        State.animationSearchTerm = term:lower()
+        State.filteredAnimations = APHFilterList(State.originalAnimationsData or State.animationsData, term)
+        State.animationCacheVersion = (State.animationCacheVersion or 0) + 1
+        State.emoteCacheVersion = State.emoteCacheVersion or 0
+    else
+        State.emoteSearchTerm = term:lower()
+        State.filteredEmotes = APHFilterList(State.originalEmotesData or State.emotesData, term)
+        State.emoteCacheVersion = (State.emoteCacheVersion or 0) + 1
+    end
+end
+
+local function APHToggleFavorite(kind, item)
+    if not item then return end
+    local ok = false
+    if kind == "animation" and toggleFavoriteAnimation then
+        ok = pcall(function() toggleFavoriteAnimation(item) end)
+    elseif kind == "emote" and toggleFavorite then
+        ok = pcall(function() toggleFavorite(item.id, APHSafeString(item.name)) end)
+    end
+    if not ok then
+        -- Keep the native UI functional even if a legacy UI-only callback fails.
+        if kind == "animation" then
+            local found
+            for i, fav in ipairs(State.favoriteAnimations or {}) do
+                if tostring(fav.id) == tostring(item.id) then found = i break end
+            end
+            if found then
+                table.remove(State.favoriteAnimations, found)
+            else
+                table.insert(State.favoriteAnimations, {
+                    id = item.id, name = APHSafeString(item.name) .. " - ⭐",
+                    bundledItems = item.bundledItems,
+                    isCustomSet = item.isCustomSet,
+                    customSetName = item.customSetName,
+                })
+            end
+        else
+            local found
+            for i, fav in ipairs(State.favoriteEmotes or {}) do
+                if tostring(fav.id) == tostring(item.id) then found = i break end
+            end
+            if found then
+                table.remove(State.favoriteEmotes, found)
+            else
+                table.insert(State.favoriteEmotes, {id = item.id, name = APHSafeString(item.name) .. " - ⭐"})
+            end
+        end
+        State.favoriteSetVersion = (State.favoriteSetVersion or 0) + 1
+    end
+end
+
+local function APHPlayItem(kind, item)
+    if not item or not item.id then return false end
+    local _, humanoid = getCharacterAndHumanoid()
+    if not humanoid then return false end
+
+    pcall(stopCurrentEmote)
+    pcall(stopEmotes)
+
+    if kind == "animation" then
+        local ok = false
+        if playAnimationPreview then
+            ok = pcall(function() return playAnimationPreview(item) end)
+        end
+        local track = State.currentEmoteTrack
+        if track and track:IsA("AnimationTrack") then
+            pcall(function()
+                track.Looped = true
+                if not track.IsPlaying then track:Play(0.12, 1, 1) end
+            end)
+            return true
+        end
+        return ok
+    end
+
+    local emoteId = tonumber(item.id)
+    if not emoteId then return false end
+    local ok, track = pcall(function()
+        return humanoid:PlayEmoteAndGetAnimTrackById(emoteId)
+    end)
+    if ok and track and typeof(track) == "Instance" and track:IsA("AnimationTrack") then
+        State.currentEmoteTrack = track
+        pcall(function()
+            track.Priority = Enum.AnimationPriority.Action
+            track.Looped = true
+            if not track.IsPlaying then track:Play(0.12, 1, 1) end
+        end)
+        return true
+    end
+
+    if playEmote then
+        local fallback = pcall(function() playEmote(humanoid, emoteId) end)
+        local fallbackTrack = State.currentEmoteTrack
+        if fallbackTrack and fallbackTrack:IsA("AnimationTrack") then
+            pcall(function() if not fallbackTrack.IsPlaying then fallbackTrack:Play(0.12, 1, 1) end end)
+            return true
+        end
+        return fallback
+    end
+    return false
 end
 
 local UIState = {
@@ -9449,7 +9609,7 @@ local Main = new("Frame", {
     Name = "Main",
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.new(0.94, 0, 0.91, 0),
+    Size = UDim2.new(0.96, 0, 0.94, 0),
     BackgroundColor3 = Theme.Background,
     BackgroundTransparency = 0.03,
 }, Screen)
@@ -9476,7 +9636,7 @@ local Brand = new("TextLabel", {
 }, Top)
 
 local SubBrand = new("TextLabel", {
-    Size = UDim2.new(0, 300, 0, 18),
+    Size = UDim2.new(1, -6, 0, 18),
     Position = UDim2.fromOffset(5, 31),
     BackgroundTransparency = 1,
     Font = Enum.Font.GothamMedium,
@@ -9530,7 +9690,7 @@ local function addTab(id, title)
         Name = id,
         AutoButtonColor = false,
         BackgroundColor3 = Theme.Surface2,
-        Size = UDim2.new(0, 130, 1, 0),
+        Size = UDim2.fromOffset(130, 43),
         Text = title,
         TextColor3 = Theme.Muted,
         Font = Enum.Font.GothamBold,
@@ -9545,6 +9705,23 @@ end
 addTab("Animations", "ANIMATIONS")
 addTab("Emotes", "EMOTES")
 addTab("Favorites", "★ FAVORITES")
+
+local function resizeTopAndTabs()
+    local w = Tabs.AbsoluteSize.X
+    local gap = 7
+    local bw = math.max(86, math.floor((w - gap * 2) / 3))
+    for _, button in pairs(TabButtons) do
+        button.Size = UDim2.fromOffset(bw, 43)
+    end
+    local topW = Top.AbsoluteSize.X
+    local rightSpace = 98
+    Brand.Size = UDim2.new(1, -rightSpace, 0, 27)
+    SubBrand.Size = UDim2.new(1, -rightSpace, 0, 18)
+    SubBrand.Visible = topW >= 320
+end
+
+Tabs:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeTopAndTabs)
+Top:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeTopAndTabs)
 
 local Tools = new("Frame", {
     Name = "Tools",
@@ -9584,6 +9761,18 @@ local FavModeBtn = new("TextButton", {
 }, Tools)
 round(FavModeBtn, 12)
 stroke(FavModeBtn, Theme.Border, 0.25, 1)
+
+local function resizeTools()
+    local w = Tools.AbsoluteSize.X
+    local favW = math.clamp(math.floor(w * 0.34), 112, 140)
+    FavModeBtn.Size = UDim2.fromOffset(favW, 46)
+    FavModeBtn.Position = UDim2.new(1, -favW, 0, 0)
+    SearchBox.Size = UDim2.new(1, -favW - 8, 1, 0)
+    SearchBox.TextSize = w < 360 and 12 or 13
+    FavModeBtn.TextSize = w < 360 and 9 or 10
+end
+
+Tools:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeTools)
 
 local Info = new("Frame", {
     Name = "Info",
@@ -9705,10 +9894,12 @@ local function resizeGrid()
     local columns = math.clamp(math.floor((width + gap) / (minWidth + gap)), 1, 4)
     local cellWidth = math.floor((width - gap * (columns - 1)) / columns)
     local mobile = width < 420
-    Grid.CellSize = UDim2.fromOffset(math.max(170, cellWidth), mobile and 112 or 116)
+    Grid.CellSize = UDim2.fromOffset(math.max(170, cellWidth), mobile and 104 or 116)
     Grid.FillDirectionMaxCells = columns
 end
 resizeGrid()
+resizeTools()
+resizeTopAndTabs()
 List:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeGrid)
 
 local function clearCards()
@@ -9729,8 +9920,12 @@ local function makeCard(kind, item, layoutOrder)
     stroke(card, Theme.Border, 0.38, 1)
     gradient(card, Color3.fromRGB(26, 31, 42), Color3.fromRGB(14, 17, 23), 35)
 
+    local cardWidth = math.max(180, List.AbsoluteSize.X)
+    local compact = cardWidth < 360
+    local thumbSize = compact and 78 or 92
+    local contentX = thumbSize + 22
     local thumbHolder = new("Frame", {
-        Size = UDim2.fromOffset(92, 92),
+        Size = UDim2.fromOffset(thumbSize, thumbSize),
         Position = UDim2.fromOffset(10, 12),
         BackgroundColor3 = Color3.fromRGB(10, 12, 17),
         BorderSizePixel = 0,
@@ -9780,7 +9975,6 @@ local function makeCard(kind, item, layoutOrder)
     }, card)
     round(fav, 10)
 
-    local contentX = 114
     local title = APHSafeString(item.name or ((kind == "animation" and "Animation" or "Emote") .. " " .. APHSafeString(item.id)))
     if #title > 38 then title = title:sub(1, 35) .. "..." end
 
@@ -9791,7 +9985,7 @@ local function makeCard(kind, item, layoutOrder)
         Text = title,
         TextColor3 = Theme.Text,
         Font = Enum.Font.GothamBold,
-        TextSize = 12,
+        TextSize = compact and 11 or 12,
         TextWrapped = true,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Top,
@@ -9805,7 +9999,7 @@ local function makeCard(kind, item, layoutOrder)
         Text = typeText .. "  •  ID " .. APHSafeString(item.id) .. (item.offsale and "  •  OFFSALE" or ""),
         TextColor3 = item.offsale and Color3.fromRGB(247, 183, 83) or Theme.Muted,
         Font = Enum.Font.GothamMedium,
-        TextSize = 9,
+        TextSize = compact and 8 or 9,
         TextWrapped = true,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Top,
@@ -9814,7 +10008,7 @@ local function makeCard(kind, item, layoutOrder)
     local action = new("TextButton", {
         AutoButtonColor = false,
         Size = UDim2.new(1, -contentX - 8, 0, 28),
-        Position = UDim2.fromOffset(contentX, 80),
+        Position = UDim2.fromOffset(contentX, compact and 76 or 80),
         BackgroundColor3 = Theme.Surface2,
         Text = UIState.favoriteMode and "ADD TO FAVORITES" or "PLAY",
         TextColor3 = UIState.favoriteMode and Theme.Accent or Theme.Good,
@@ -9947,12 +10141,12 @@ rebuild = function()
         -- Preload just the current page: much lighter on mobile memory/network.
         local batch = {}
         for _, child in ipairs(List:GetChildren()) do
-            local img = child:FindFirstChild("Frame")
-            if img then
-                local holder = child:FindFirstChildOfClass("Frame")
-                local image = holder and holder:FindFirstChildOfClass("ImageLabel")
-                if image and image.Image ~= "" then
-                    table.insert(batch, image)
+            if child:IsA("Frame") then
+                for _, desc in ipairs(child:GetDescendants()) do
+                    if desc:IsA("ImageLabel") and desc.Image ~= "" then
+                        table.insert(batch, desc)
+                        break
+                    end
                 end
             end
         end
