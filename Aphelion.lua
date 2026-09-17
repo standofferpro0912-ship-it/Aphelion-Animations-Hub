@@ -38,6 +38,7 @@ if _G.AphelionGUIRunning then
     return
 end
 _G.AphelionGUIRunning = true
+getgenv().APHELION_STANDALONE_UI = true
 local offsaleAnimationJson = true
 
 local HttpService = game:GetService("HttpService")
@@ -8723,6 +8724,10 @@ State.RefreshSettingsUI = function()
 end
 
 function checkAndRecreateGUI()
+    if getgenv().APHELION_STANDALONE_UI then
+        State.isGUICreated = false
+        return
+    end
     local exists, emotesWheel = checkEmotesMenuExists()
     if not exists then
         State.isGUICreated = false
@@ -8754,7 +8759,7 @@ player.CharacterAdded:Connect(function(char)
     task.spawn(function()
         local attempts = 0
         while attempts < 20 do
-            if checkEmotesMenuExists() then
+            if not getgenv().APHELION_STANDALONE_UI and checkEmotesMenuExists() then
                 task.wait(0.2)
                 if createGUIElements() then
                     updatePageDisplay()
@@ -8772,6 +8777,9 @@ end)
 
 
 RunService.Heartbeat:Connect(function()
+    if getgenv().APHELION_STANDALONE_UI then
+        return
+    end
     if not State.isGUICreated then
         checkAndRecreateGUI()
     else
@@ -8801,6 +8809,10 @@ end)
 StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, true)
 task.spawn(function()
     while true do
+        if getgenv().APHELION_STANDALONE_UI then
+            task.wait(0.75)
+            continue
+        end
         local robloxGui = game:GetService("CoreGui"):FindFirstChild("RobloxGui")
         local emotesMenu = robloxGui and robloxGui:FindFirstChild("EmotesMenu")
 
@@ -8828,7 +8840,7 @@ task.spawn(function()
     end
 end)
 
-if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled and not getgenv().APHELION_STANDALONE_UI then
     SafeLoad("https://raw.githubusercontent.com/7yd7/Hub/refs/heads/Branch/GUIS/OpenEmote.lua", "Open Emote")
     getgenv().Notify({
         Title = 'Aphelion | Emote Mobile',
@@ -9246,4 +9258,620 @@ AphelionSafeNotify(
     "🔥 Loaded dynamic animation/emote architecture with full bundle resolution + real BundleThumbnail support.",
     5
 )
+
+
+
+--[[==========================================================================
+    APHELION // INDEPENDENT UI
+    Public UI library: Fluent (no watermark)
+
+    The animation/emote catalog backend remains the original dynamic system:
+      - AnimationSniper.json
+      - AnimationSniperoffsale.json
+      - EmoteSniper.json
+      - bundle -> Animation object resolution
+
+    This layer replaces the old SettingsLib/Roblox EmotesWheel presentation
+    with a standalone Fluent-based window.
+============================================================================]]
+
+getgenv().APHELION_STANDALONE_UI = true
+
+local APHELION_FLUENT_URL = "https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"
+local APHELION_UI_VERSION = "3.0.0"
+
+local function APHClampNumber(v, lo, hi, fallback)
+    v = tonumber(v)
+    if not v then return fallback end
+    return math.clamp(v, lo, hi)
+end
+
+local function APHSafeString(v)
+    return tostring(v or "")
+end
+
+local function APHDisplayCount(list)
+    if type(list) ~= "table" then
+        return 0
+    end
+    local n = 0
+    for _, item in ipairs(list) do
+        if type(item) == "table" and tonumber(item.id) then
+            n += 1
+        end
+    end
+    return n
+end
+
+local function APHGetCurrentList(kind)
+    if kind == "animation" then
+        return State.filteredAnimations or State.originalAnimationsData or State.animationsData or {}
+    end
+    return State.filteredEmotes or State.originalEmotesData or State.emotesData or {}
+end
+
+local function APHGetSearch(kind)
+    return kind == "animation" and (State.animationSearchTerm or "") or (State.emoteSearchTerm or "")
+end
+
+local function APHSetSearch(kind, text)
+    text = APHSafeString(text)
+    if kind == "animation" then
+        State.animationSearchTerm = text
+        AphelionSearchAnimations(text)
+    else
+        State.emoteSearchTerm = text
+        AphelionSearchEmotes(text)
+    end
+end
+
+local function APHIsFavorite(kind, item)
+    if type(item) ~= "table" then return false end
+    return pcall(function() end) and (function()
+        if kind == "animation" then
+            return isInFavorites(item.id)
+        end
+        return isInFavorites(item.id)
+    end)()
+end
+
+local function APHToggleFavorite(kind, item)
+    if type(item) ~= "table" then return false end
+    local ok = false
+    if kind == "animation" then
+        ok = pcall(toggleFavoriteAnimation, item)
+    else
+        ok = pcall(toggleFavorite, item.id, item.name)
+    end
+    return ok
+end
+
+local function APHPlayItem(kind, item)
+    if type(item) ~= "table" then return false end
+
+    if kind == "animation" then
+        if type(applyAnimation) == "function" then
+            local ok = pcall(applyAnimation, item)
+            if ok then
+                return true
+            end
+        end
+        return false
+    end
+
+    local _, hum = getCharacterAndHumanoid()
+    if not hum then
+        return false
+    end
+
+    if type(playRandomEmote) == "function" then
+        local ok = pcall(playRandomEmote, hum, item.id)
+        if ok then return true end
+    end
+
+    if type(playEmote) == "function" then
+        local ok = pcall(playEmote, hum, item.id)
+        if ok then return true end
+    end
+
+    return false
+end
+
+local function APHSetSpeed(v)
+    local speed = APHClampNumber(v, 0.1, 4, 1)
+    Config.EmoteSpeed = speed
+    if UI and UI.SpeedBox then
+        UI.SpeedBox.Text = tostring(speed)
+    end
+    if State.currentEmoteTrack and typeof(State.currentEmoteTrack) == "Instance" then
+        pcall(function()
+            State.currentEmoteTrack:AdjustSpeed(speed)
+        end)
+    end
+    pcall(SaveConfig)
+    return speed
+end
+
+local function APHSetSpeedEnabled(v)
+    Config.EmoteSpeedEnabled = v == true
+    State.speedEmoteEnabled = v == true
+    if UI and UI.SpeedBox then
+        UI.SpeedBox.Text = tostring(Config.EmoteSpeed or 1)
+    end
+    pcall(SaveConfig)
+end
+
+-- Compatibility proxy for backend functions that still read UI.SpeedBox.
+do
+    local proxyGui = Instance.new("ScreenGui")
+    proxyGui.Name = "AphelionBackendProxy"
+    proxyGui.IgnoreGuiInset = true
+    proxyGui.ResetOnSpawn = false
+    proxyGui.Enabled = false
+    pcall(function() proxyGui.Parent = CoreGui end)
+
+    local speedProxy = Instance.new("TextBox")
+    speedProxy.Name = "SpeedProxy"
+    speedProxy.Text = tostring(Config.EmoteSpeed or 1)
+    speedProxy.Parent = proxyGui
+    UI.SpeedBox = speedProxy
+end
+
+-- Hide/destroy the previous SettingsLib presentation. Backend state/functions
+-- remain in place; only the presentation layer is retired.
+pcall(function()
+    if SettingsLib and SettingsLib.UI then
+        SettingsLib.UI.Enabled = false
+        SettingsLib.UI:Destroy()
+    end
+end)
+
+pcall(function()
+    StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.EmotesMenu, false)
+end)
+
+-- Load a public, watermark-free UI framework.
+local AphelionFluent = nil
+local fluentOk = false
+pcall(function()
+    AphelionFluent = SafeLoad(APHELION_FLUENT_URL, "Fluent UI")
+    fluentOk = type(AphelionFluent) == "table" and type(AphelionFluent.CreateWindow) == "function"
+end)
+
+if not fluentOk then
+    AphelionSafeNotify("Aphelion | UI", "❌ Fluent UI failed to load. Backend is still running.", 6)
+else
+    local okWindow, Window = pcall(function()
+        return AphelionFluent:CreateWindow({
+            Title = "APHELION",
+            SubTitle = "FULL ROBLOX ANIMATION CATALOG  •  v" .. APHELION_UI_VERSION,
+            TabWidth = 150,
+            Size = UDim2.fromOffset(780, 570),
+            Acrylic = true,
+            Theme = "Dark",
+            MinimizeKey = Enum.KeyCode.RightControl
+        })
+    end)
+
+    if okWindow and Window then
+        local Tabs = {}
+        local tabOk = pcall(function()
+            Tabs.Home = Window:AddTab({ Title = "Home", Icon = "home" })
+            Tabs.Animations = Window:AddTab({ Title = "Animations", Icon = "play" })
+            Tabs.Emotes = Window:AddTab({ Title = "Emotes", Icon = "smile" })
+            Tabs.Favorites = Window:AddTab({ Title = "Favorites", Icon = "heart" })
+            Tabs.Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
+        end)
+
+        if tabOk then
+            local Dynamic = {
+                Animation = {},
+                Emote = {},
+                Favorites = {},
+                Static = {},
+            }
+
+            local AnimationSearchInput
+            local EmoteSearchInput
+            local AnimationStatus
+            local EmoteStatus
+            local HomeStatus
+            local FavoriteStatus
+            local listGeneration = 0
+            local rebuildFavorites
+
+            local function destroyDynamic(bucket)
+                for i = #bucket, 1, -1 do
+                    local obj = bucket[i]
+                    bucket[i] = nil
+                    pcall(function()
+                        if type(obj) == "table" and type(obj.Destroy) == "function" then
+                            obj:Destroy()
+                        elseif typeof(obj) == "Instance" then
+                            obj:Destroy()
+                        end
+                    end)
+                end
+            end
+
+            local function safeParagraph(tab, title, content)
+                local ok, result = pcall(function()
+                    return tab:AddParagraph({ Title = title, Content = content })
+                end)
+                if ok then return result end
+                return nil
+            end
+
+            local function setParagraph(paragraph, title, content)
+                if not paragraph then return end
+                pcall(function()
+                    if paragraph.SetTitle then paragraph:SetTitle(title) end
+                    if paragraph.SetContent then paragraph:SetContent(content) end
+                    if paragraph.SetText then paragraph:SetText(content) end
+                end)
+            end
+
+            local function addButton(tab, bucket, title, description, callback)
+                local ok, result = pcall(function()
+                    return tab:AddButton({
+                        Title = title,
+                        Description = description,
+                        Callback = callback,
+                    })
+                end)
+                if ok and result then
+                    table.insert(bucket, result)
+                    return result
+                end
+                return nil
+            end
+
+            local function currentStats()
+                return APHDisplayCount(State.originalAnimationsData or State.animationsData),
+                       APHDisplayCount(State.originalEmotesData or State.emotesData)
+            end
+
+            local function playOrFavorite(kind, item)
+                if State.favoriteEnabled then
+                    APHToggleFavorite(kind, item)
+                    task.defer(function()
+                        pcall(function() rebuildKind(kind) end)
+                        pcall(rebuildFavorites)
+                    end)
+                    return
+                end
+                local success = APHPlayItem(kind, item)
+                if success then
+                    AphelionSafeNotify("Aphelion", "▶ " .. APHSafeString(item.name), 2)
+                else
+                    AphelionSafeNotify("Aphelion", "❌ Could not play " .. APHSafeString(item.name), 3)
+                end
+            end
+
+            local function rebuildKind(kind)
+                listGeneration += 1
+                local generation = listGeneration
+                local bucket = kind == "animation" and Dynamic.Animation or Dynamic.Emote
+                destroyDynamic(bucket)
+
+                local tab = kind == "animation" and Tabs.Animations or Tabs.Emotes
+                local list = APHGetCurrentList(kind)
+                local page = kind == "animation" and (State.currentAnimationUiPage or 1) or (State.currentEmoteUiPage or 1)
+                local perPage = 10
+                local totalPages = math.max(1, math.ceil(#list / perPage))
+                page = math.clamp(page, 1, totalPages)
+
+                if kind == "animation" then
+                    State.currentAnimationUiPage = page
+                    setParagraph(AnimationStatus,
+                        "Animation catalog",
+                        string.format("Page %d / %d   •   %d results   •   %s", page, totalPages, #list, APHGetSearch(kind) ~= "" and ("search: " .. APHGetSearch(kind)) or "full catalog"))
+                else
+                    State.currentEmoteUiPage = page
+                    setParagraph(EmoteStatus,
+                        "Emote catalog",
+                        string.format("Page %d / %d   •   %d results   •   %s", page, totalPages, #list, APHGetSearch(kind) ~= "" and ("search: " .. APHGetSearch(kind)) or "full catalog"))
+                end
+
+                local first = (page - 1) * perPage + 1
+                local last = math.min(#list, first + perPage - 1)
+
+                if first > #list then
+                    return
+                end
+
+                for index = first, last do
+                    if generation ~= listGeneration then
+                        return
+                    end
+                    local item = list[index]
+                    local fav = APHIsFavorite(kind, item)
+                    local icon = fav and "★" or "☆"
+                    local name = APHSafeString(item.name or ((kind == "animation" and "Animation" or "Emote") .. " " .. APHSafeString(item.id)))
+                    if #name > 56 then
+                        name = name:sub(1, 53) .. "..."
+                    end
+
+                    local description
+                    if kind == "animation" then
+                        description = "ID " .. APHSafeString(item.id)
+                            .. "  •  " .. (item.bundledItems and "Bundle" or "Animation")
+                            .. (item.offsale and "  •  OFFSALE" or "")
+                    else
+                        description = "ID " .. APHSafeString(item.id) .. "  •  Emote"
+                    end
+
+                    addButton(tab, bucket, icon .. "  " .. name, description, function()
+                        playOrFavorite(kind, item)
+                    end)
+                end
+
+                addButton(tab, bucket, "← PREVIOUS", "Go to the previous catalog page", function()
+                    local p = (kind == "animation" and State.currentAnimationUiPage or State.currentEmoteUiPage or 1)
+                    p -= 1
+                    if p < 1 then p = totalPages end
+                    if kind == "animation" then State.currentAnimationUiPage = p else State.currentEmoteUiPage = p end
+                    rebuildKind(kind)
+                end)
+
+                addButton(tab, bucket, "NEXT →", "Go to the next catalog page", function()
+                    local p = (kind == "animation" and State.currentAnimationUiPage or State.currentEmoteUiPage or 1)
+                    p += 1
+                    if p > totalPages then p = 1 end
+                    if kind == "animation" then State.currentAnimationUiPage = p else State.currentEmoteUiPage = p end
+                    rebuildKind(kind)
+                end)
+            end
+
+            -- HOME ----------------------------------------------------------------
+            safeParagraph(Tabs.Home, "APHELION", "Independent animation/emote interface • Fluent UI • No watermark")
+            HomeStatus = safeParagraph(Tabs.Home, "Catalog status", "Loading Roblox catalog...")
+
+            addButton(Tabs.Home, Dynamic.Static, "🔄 REFRESH FULL CATALOG", "Reload animations + emotes and refresh thumbnails", function()
+                AphelionRefreshCatalog("ui-refresh", true)
+                task.delay(1.2, function()
+                    setParagraph(HomeStatus, "Catalog status", "Refresh requested • animations: " .. APHDisplayCount(State.originalAnimationsData) .. " • emotes: " .. APHDisplayCount(State.originalEmotesData))
+                    rebuildKind("animation")
+                    rebuildKind("emote")
+                end)
+            end)
+
+            addButton(Tabs.Home, Dynamic.Static, "🎲 RANDOM", "Play a random catalog item", function()
+                local kind = (State.currentMode == "animation") and "animation" or "emote"
+                local list = APHGetCurrentList(kind)
+                if #list == 0 then
+                    AphelionSafeNotify("Aphelion", "⏳ Catalog is still loading.", 3)
+                    return
+                end
+                local item = list[math.random(1, #list)]
+                APHPlayItem(kind, item)
+                AphelionSafeNotify("Aphelion | Random", item.name, 2)
+            end)
+
+            addButton(Tabs.Home, Dynamic.Static, "⏹ STOP CURRENT", "Stop the current emote track", function()
+                stopCurrentEmote()
+            end)
+
+            pcall(function()
+                Tabs.Home:AddToggle("FavoriteModeHome", {
+                    Title = "Favorite mode",
+                    Description = "Clicking a catalog item adds/removes it from favorites instead of playing it.",
+                    Default = false,
+                }):OnChanged(function(v)
+                    State.favoriteEnabled = v == true
+                end)
+            end)
+
+            pcall(function()
+                Tabs.Home:AddToggle("SpeedEnabledHome", {
+                    Title = "Emote speed",
+                    Description = "Apply the speed value when playing emotes.",
+                    Default = Config.EmoteSpeedEnabled == true,
+                }):OnChanged(APHSetSpeedEnabled)
+
+                Tabs.Home:AddInput("SpeedHome", {
+                    Title = "Speed",
+                    Description = "0.1x to 4x",
+                    Default = tostring(Config.EmoteSpeed or 1),
+                    Placeholder = "1.0",
+                    Numeric = true,
+                    Finished = true,
+                    Callback = function(v)
+                        APHSetSpeed(v)
+                    end,
+                })
+            end)
+
+            -- ANIMATIONS -------------------------------------------------------
+            AnimationStatus = safeParagraph(Tabs.Animations, "Animation catalog", "Waiting for catalog...")
+            local animInputOk
+            animInputOk, AnimationSearchInput = pcall(function()
+                return Tabs.Animations:AddInput("AnimationSearch", {
+                    Title = "Search animations",
+                    Description = "Search by name or exact bundle ID",
+                    Default = "",
+                    Placeholder = "Search the full catalog...",
+                    Callback = function(value)
+                        APHSetSearch("animation", value)
+                        State.currentAnimationUiPage = 1
+                        rebuildKind("animation")
+                    end,
+                })
+            end)
+            if not animInputOk then AnimationSearchInput = nil end
+
+            addButton(Tabs.Animations, Dynamic.Static, "↻ CLEAR SEARCH", "Show every animation again", function()
+                APHSetSearch("animation", "")
+                State.currentAnimationUiPage = 1
+                rebuildKind("animation")
+            end)
+
+            -- EMOTES -----------------------------------------------------------
+            EmoteStatus = safeParagraph(Tabs.Emotes, "Emote catalog", "Waiting for catalog...")
+            local emoteInputOk
+            emoteInputOk, EmoteSearchInput = pcall(function()
+                return Tabs.Emotes:AddInput("EmoteSearch", {
+                    Title = "Search emotes",
+                    Description = "Search by name or exact asset ID",
+                    Default = "",
+                    Placeholder = "Search emotes...",
+                    Callback = function(value)
+                        APHSetSearch("emote", value)
+                        State.currentEmoteUiPage = 1
+                        rebuildKind("emote")
+                    end,
+                })
+            end)
+            if not emoteInputOk then EmoteSearchInput = nil end
+
+            addButton(Tabs.Emotes, Dynamic.Static, "↻ CLEAR SEARCH", "Show every emote again", function()
+                APHSetSearch("emote", "")
+                State.currentEmoteUiPage = 1
+                rebuildKind("emote")
+            end)
+
+            -- FAVORITES --------------------------------------------------------
+            FavoriteStatus = safeParagraph(Tabs.Favorites, "Favorites", "Loading favorites...")
+
+            rebuildFavorites = function()
+                destroyDynamic(Dynamic.Favorites)
+                local aFav = State.favoriteAnimations or {}
+                local eFav = State.favoriteEmotes or {}
+                setParagraph(FavoriteStatus, "Favorites", string.format("Animations: %d   •   Emotes: %d", #aFav, #eFav))
+
+                for _, item in ipairs(aFav) do
+                    addButton(Tabs.Favorites, Dynamic.Favorites,
+                        "★  " .. APHSafeString(item.name),
+                        "Animation ID " .. APHSafeString(item.id),
+                        function()
+                            APHPlayItem("animation", item)
+                        end)
+                end
+
+                for _, item in ipairs(eFav) do
+                    addButton(Tabs.Favorites, Dynamic.Favorites,
+                        "★  " .. APHSafeString(item.name),
+                        "Emote ID " .. APHSafeString(item.id),
+                        function()
+                            APHPlayItem("emote", item)
+                        end)
+                end
+
+                if #aFav == 0 and #eFav == 0 then
+                    addButton(Tabs.Favorites, Dynamic.Favorites,
+                        "No favorites yet",
+                        "Turn on Favorite mode in Home and click catalog items.",
+                        function() end)
+                end
+            end
+
+            addButton(Tabs.Favorites, Dynamic.Static, "🔄 REFRESH FAVORITES", "Rebuild the favorites list", function()
+                rebuildFavorites()
+            end)
+
+            -- SETTINGS ---------------------------------------------------------
+            safeParagraph(Tabs.Settings, "Catalog", "Control what Aphelion loads and how often it refreshes.")
+
+            pcall(function()
+                Tabs.Settings:AddToggle("Offsale", {
+                    Title = "Include off-sale animations",
+                    Description = "Include AnimationSniperoffsale.json in the catalog.",
+                    Default = Config.IncludeOffsaleAnimations ~= false,
+                }):OnChanged(function(v)
+                    AphelionSetOffsaleAnimationsEnabled(v, true)
+                end)
+
+                Tabs.Settings:AddToggle("AutoRefresh", {
+                    Title = "Automatic catalog refresh",
+                    Description = "Refresh the dynamic catalog on a timer.",
+                    Default = Config.CatalogAutoRefresh ~= false,
+                }):OnChanged(function(v)
+                    Config.CatalogAutoRefresh = v == true
+                    pcall(SaveConfig)
+                end)
+
+                Tabs.Settings:AddInput("RefreshMinutes", {
+                    Title = "Refresh interval (minutes)",
+                    Description = "Minimum 5 minutes",
+                    Default = tostring(Config.CatalogRefreshMinutes or 15),
+                    Numeric = true,
+                    Finished = true,
+                    Callback = function(v)
+                        Config.CatalogRefreshMinutes = APHClampNumber(v, 5, 240, 15)
+                        pcall(SaveConfig)
+                    end,
+                })
+
+                Tabs.Settings:AddToggle("Notifications", {
+                    Title = "Notifications",
+                    Description = "Show Aphelion status notifications.",
+                    Default = Config.NotifyEnabled ~= false,
+                }):OnChanged(function(v)
+                    Config.NotifyEnabled = v == true
+                    pcall(SaveConfig)
+                end)
+            end)
+
+            addButton(Tabs.Settings, Dynamic.Static, "📦 PRELOAD THUMBNAILS", "Preload the first batch of animation bundle thumbnails", function()
+                AphelionPreloadAnimationThumbnails(APHClampNumber(Config.ThumbnailPreloadCount, 1, 128, 48))
+                AphelionSafeNotify("Aphelion | Thumbnails", "Thumbnail preload started.", 3)
+            end)
+
+            addButton(Tabs.Settings, Dynamic.Static, "💾 EXPORT CATALOG SNAPSHOT", "Build a current catalog snapshot through the public Aphelion API", function()
+                local snapshot = AphelionExportCatalogSnapshot()
+                if snapshot then
+                    AphelionSafeNotify("Aphelion | Snapshot", "Animations: " .. #snapshot.Animations .. " • Emotes: " .. #snapshot.Emotes, 4)
+                end
+            end)
+
+            -- First render; data is fetched asynchronously by the backend.
+            task.spawn(function()
+                local attempts = 0
+                while attempts < 40 do
+                    local a = APHDisplayCount(State.originalAnimationsData or State.animationsData)
+                    local e = APHDisplayCount(State.originalEmotesData or State.emotesData)
+                    if a > 0 or e > 0 then
+                        break
+                    end
+                    attempts += 1
+                    task.wait(0.5)
+                end
+
+                local a, e = currentStats()
+                setParagraph(HomeStatus, "Catalog status", "Animations: " .. a .. "  •  Emotes: " .. e .. "  •  Dynamic sources active")
+                rebuildKind("animation")
+                rebuildKind("emote")
+                rebuildFavorites()
+            end)
+
+            -- Keep the independent UI synced with the existing backend refreshes.
+            task.spawn(function()
+                local lastA, lastE = -1, -1
+                while true do
+                    task.wait(2)
+                    local a, e = currentStats()
+                    if a ~= lastA or e ~= lastE then
+                        lastA, lastE = a, e
+                        setParagraph(HomeStatus, "Catalog status", "Animations: " .. a .. "  •  Emotes: " .. e .. "  •  Dynamic sources active")
+                        pcall(function() rebuildKind("animation") end)
+                        pcall(function() rebuildKind("emote") end)
+                        pcall(rebuildFavorites)
+                    end
+                end
+            end)
+
+            AphelionSafeNotify(
+                "APHELION | UI",
+                "✨ Independent Fluent UI loaded • full dynamic catalog preserved • no Rayfield / no watermark",
+                5
+            )
+        end
+    end
+end
+
+-- Make the public API explicit for the independent UI.
+getgenv().Aphelion = getgenv().Aphelion or {}
+getgenv().Aphelion.UILibrary = "Fluent"
+getgenv().Aphelion.UIVersion = APHELION_UI_VERSION
+getgenv().Aphelion.StandaloneUI = true
 
