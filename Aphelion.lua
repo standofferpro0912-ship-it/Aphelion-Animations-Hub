@@ -3864,6 +3864,117 @@ function getCharacterAndHumanoid()
     return character, humanoid
 end
 
+-- APHELION BUNDLE PERSISTENCE
+-- A selected bundle is a character animation set, not a one-shot preview.
+-- Reapply it after respawn and on script start so Roblox's fresh Animate script
+-- cannot silently restore the default Idle/Walk/Run set.
+local AphelionBundleRestoreToken = 0
+
+local function AphelionIsBundleAnimation(data)
+    return type(data) == "table" and (data.bundledItems ~= nil or data.isCustomSet == true)
+end
+
+local function AphelionGetSavedBundle()
+    local data = getgenv().lastPlayedAnimation or Config.LastPlayedAnimationData
+    if not AphelionIsBundleAnimation(data) then
+        return nil
+    end
+    return data
+end
+
+local function AphelionWaitForCharacterReady(character)
+    if not character or not character.Parent then
+        return nil, nil, nil
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then
+        humanoid = character:WaitForChild("Humanoid", 10)
+    end
+    if not humanoid then
+        return nil, nil, nil
+    end
+
+    local animate = character:FindFirstChild("Animate")
+    if not animate then
+        animate = character:WaitForChild("Animate", 10)
+    end
+
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then
+        root = character:WaitForChild("HumanoidRootPart", 10)
+    end
+
+    if not animate or not root then
+        return nil, nil, nil
+    end
+
+    -- Character appearance can overwrite Animate after the Humanoid exists.
+    -- Give that pipeline a moment to settle before applying the bundle.
+    pcall(function()
+        if not player:HasAppearanceLoaded() then
+            player.CharacterAppearanceLoaded:Wait()
+        end
+    end)
+    task.wait(0.18)
+
+    return humanoid, animate, root
+end
+
+local function AphelionRestoreSavedBundle(character, reason)
+    local savedBundle = AphelionGetSavedBundle()
+    if not savedBundle then
+        return false
+    end
+
+    AphelionBundleRestoreToken += 1
+    local token = AphelionBundleRestoreToken
+    local targetCharacter = character or player.Character
+
+    task.spawn(function()
+        local humanoid, animate = AphelionWaitForCharacterReady(targetCharacter)
+        if token ~= AphelionBundleRestoreToken then
+            return
+        end
+        if not humanoid or not animate or not targetCharacter or not targetCharacter.Parent then
+            return
+        end
+
+        local ok, err = pcall(function()
+            applyAnimation(savedBundle)
+        end)
+
+        if not ok then
+            warn("Aphelion | bundle restore failed (" .. tostring(reason or "unknown") .. "): " .. tostring(err))
+            return
+        end
+
+        -- Force Roblox's Animate controller to re-read the freshly replaced
+        -- AnimationIds. This is especially important directly after respawn.
+        task.wait(0.08)
+        if token ~= AphelionBundleRestoreToken then
+            return
+        end
+        if animate.Parent and humanoid.Parent and humanoid.MoveDirection.Magnitude == 0 then
+            pcall(function()
+                animate.Disabled = true
+                task.wait()
+                animate.Disabled = false
+            end)
+        end
+
+        if tostring(reason) ~= "selection" then
+            AphelionSafeNotify(
+                "Aphelion | Bundle Restored",
+                "▶ " .. tostring(savedBundle.name or savedBundle.id or "Selected bundle"),
+                2
+            )
+        end
+    end)
+
+    return true
+end
+
 function urlToId(animationId)
     animationId = string.gsub(animationId, "http://www%.roblox%.com/asset/%?id=", "")
     animationId = string.gsub(animationId, "rbxassetid://", "")
@@ -6416,7 +6527,14 @@ function onCharacterAdded(character)
     local humanoid = character:WaitForChild("Humanoid")
     local animator = humanoid:WaitForChild("Animator")
 
-    if getgenv().autoReloadEnabled and getgenv().lastPlayedAnimation then
+    -- Bundles are persistent character animation sets. Always restore the
+    -- selected bundle after spawn/death; the legacy Auto Reload toggle remains
+    -- available for older non-bundle animation behavior.
+    if AphelionIsBundleAnimation(getgenv().lastPlayedAnimation) then
+        AphelionRestoreSavedBundle(character, "respawn")
+    end
+
+    if getgenv().autoReloadEnabled and getgenv().lastPlayedAnimation and not AphelionIsBundleAnimation(getgenv().lastPlayedAnimation) then
         task.spawn(function()
             local player = game.Players.LocalPlayer
             if not player:HasAppearanceLoaded() then
@@ -8793,6 +8911,16 @@ if player.Character then
     onCharacterAdded(player.Character)
 end
 
+-- Fresh execution: automatically load the last selected bundle as soon as the
+-- current character is ready. This does not require pressing Play again.
+task.spawn(function()
+    task.wait(0.35)
+    local currentCharacter = player.Character
+    if currentCharacter and AphelionGetSavedBundle() then
+        AphelionRestoreSavedBundle(currentCharacter, "startup")
+    end
+end)
+
 player.CharacterAdded:Connect(function(char)
     character = char
     humanoid = char:WaitForChild("Humanoid")
@@ -9502,6 +9630,13 @@ local function APHPlayItem(kind, item)
                 warn("Aphelion | bundle apply failed: " .. tostring(err))
                 return false
             end
+
+            -- Remember this exact bundle and make it the persistent startup
+            -- selection. Respawns and fresh executions will restore it.
+            getgenv().lastPlayedAnimation = item
+            Config.LastPlayedAnimationData = item
+            task.spawn(SaveConfig)
+            AphelionBundleRestoreToken += 1
             return true
         end
 
