@@ -43,6 +43,7 @@ local offsaleAnimationJson = true
 
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
@@ -238,42 +239,83 @@ function saveAnimationCache()
     end
 end
 
+local APHELION_MOTION_ALIASES = {
+    idle = "idle", idle1 = "idle", idle2 = "idle",
+    walk = "walk", walking = "walk",
+    run = "run", running = "run", sprint = "run",
+    jump = "jump", jumping = "jump",
+    fall = "fall", falling = "fall", freefall = "fall",
+    climb = "climb", climbing = "climb",
+    swim = "swim", swimming = "swim",
+    swimidle = "swimidle", swimsidle = "swimidle",
+}
+
+local function normalizeMotionCategory(value)
+    local key = tostring(value or ""):lower():gsub("[%s_%-.]", "")
+    return APHELION_MOTION_ALIASES[key]
+end
+
+local function classifyAnimationPath(path, animationName)
+    local candidates = {}
+    for part in tostring(path or ""):gmatch("[^%.]+") do
+        table.insert(candidates, part)
+    end
+    if animationName then table.insert(candidates, animationName) end
+    for i = #candidates, 1, -1 do
+        local normalized = normalizeMotionCategory(candidates[i])
+        if normalized then return normalized end
+    end
+    return tostring(candidates[#candidates - 1] or candidates[#candidates] or "Unknown")
+end
+
 function resolveAnimationMappings(bundledItems)
     local mappings = {}
+    if type(bundledItems) ~= "table" then return mappings end
+
+    local seen = {}
     for _, assetIds in pairs(bundledItems) do
-        for _, assetId in pairs(assetIds) do
-            local success, objects = pcall(function()
-                return game:GetObjects("rbxassetid://" .. assetId)
-            end)
-            if success and objects then
-                local function searchTree(parent, parentPath)
-                    for _, child in pairs(parent:GetChildren()) do
-                        if child:IsA("Animation") then
-                            local animationPath = parentPath .. "." .. child.Name
-                            local pathParts = animationPath:split(".")
-                            local weightVals = {}
-                            for _, wChild in ipairs(child:GetChildren()) do
-                                if wChild:IsA("NumberValue") and wChild.Name == "Weight" then
-                                    table.insert(weightVals, wChild.Value)
+        if type(assetIds) == "table" then
+            for _, assetId in pairs(assetIds) do
+                local numericAssetId = tonumber(assetId)
+                if numericAssetId then
+                    local success, objects = pcall(function()
+                        return game:GetObjects("rbxassetid://" .. tostring(numericAssetId))
+                    end)
+                    if success and objects then
+                        local function searchTree(parent, parentPath)
+                            for _, child in pairs(parent:GetChildren()) do
+                                if child:IsA("Animation") then
+                                    local animationPath = parentPath .. "." .. child.Name
+                                    local weightVals = {}
+                                    for _, wChild in ipairs(child:GetChildren()) do
+                                        if wChild:IsA("NumberValue") and wChild.Name == "Weight" then
+                                            table.insert(weightVals, wChild.Value)
+                                        end
+                                    end
+                                    local category = classifyAnimationPath(animationPath, child.Name)
+                                    local key = category:lower() .. "|" .. child.Name:lower() .. "|" .. tostring(child.AnimationId)
+                                    if not seen[key] then
+                                        seen[key] = true
+                                        table.insert(mappings, {
+                                            category = category,
+                                            name = child.Name,
+                                            animationId = child.AnimationId,
+                                            weights = weightVals,
+                                        })
+                                    end
+                                elseif #child:GetChildren() > 0 then
+                                    searchTree(child, parentPath .. "." .. child.Name)
                                 end
                             end
-                            table.insert(mappings, {
-                                category = pathParts[#pathParts - 1],
-                                name = pathParts[#pathParts],
-                                animationId = child.AnimationId,
-                                weights = weightVals
-                            })
-                        elseif #child:GetChildren() > 0 then
-                            searchTree(child, parentPath .. "." .. child.Name)
+                        end
+                        for _, obj in pairs(objects) do
+                            searchTree(obj, obj.Name)
+                            obj.Parent = workspace
+                            task.delay(1, function()
+                                if obj then obj:Destroy() end
+                            end)
                         end
                     end
-                end
-                for _, obj in pairs(objects) do
-                    searchTree(obj, obj.Name)
-                    obj.Parent = workspace
-                    task.delay(1, function()
-                        if obj then obj:Destroy() end
-                    end)
                 end
             end
         end
@@ -9449,9 +9491,24 @@ local function APHPlayItem(kind, item)
     pcall(stopEmotes)
 
     if kind == "animation" then
-        local ok = false
+        -- Bundle cards represent a complete animation set. Do NOT treat them
+        -- like emotes or single previews: apply Idle, Walk, Run, Jump, Fall,
+        -- Climb and Swim into the character's Animate controller.
+        if item.bundledItems or item.isCustomSet then
+            local ok, err = pcall(function()
+                applyAnimation(item)
+            end)
+            if not ok then
+                warn("Aphelion | bundle apply failed: " .. tostring(err))
+                return false
+            end
+            return true
+        end
+
+        -- Legacy fallback for a single animation asset.
+        local previewOk = false
         if playAnimationPreview then
-            ok = pcall(function() return playAnimationPreview(item) end)
+            previewOk = pcall(function() return playAnimationPreview(item) end)
         end
         local track = State.currentEmoteTrack
         if track and track:IsA("AnimationTrack") then
@@ -9461,7 +9518,7 @@ local function APHPlayItem(kind, item)
             end)
             return true
         end
-        return ok
+        return previewOk
     end
 
     local emoteId = tonumber(item.id)
@@ -9549,6 +9606,46 @@ function gradient(obj, c1, c2, rotation)
     }, obj)
 end
 
+local function tween(obj, duration, props, style, direction)
+    if not obj then return end
+    local ok, t = pcall(function()
+        return TweenService:Create(obj, TweenInfo.new(duration or 0.18, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out), props or {})
+    end)
+    if ok and t then t:Play(); return t end
+end
+
+local function buttonFX(button, normalColor, hoverColor, pressedColor)
+    if not button or not button:IsA("GuiButton") then return end
+    local fxScale = button:FindFirstChild("FXScale")
+    if not fxScale then
+        fxScale = Instance.new("UIScale")
+        fxScale.Name = "FXScale"
+        fxScale.Scale = 1
+        fxScale.Parent = button
+    end
+    button.AutoButtonColor = false
+    button.MouseEnter:Connect(function()
+        tween(button, 0.12, {BackgroundColor3 = hoverColor or normalColor})
+        tween(fxScale, 0.12, {Scale = 1.025})
+    end)
+    button.MouseLeave:Connect(function()
+        tween(button, 0.14, {BackgroundColor3 = normalColor})
+        tween(fxScale, 0.14, {Scale = 1})
+    end)
+    button.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            tween(button, 0.06, {BackgroundColor3 = pressedColor or hoverColor or normalColor})
+            tween(fxScale, 0.06, {Scale = 0.985})
+        end
+    end)
+    button.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            tween(button, 0.10, {BackgroundColor3 = normalColor})
+            tween(fxScale, 0.10, {Scale = 1})
+        end
+    end)
+end
+
 function setText(label, text)
     label.Text = APHSafeString(text)
 end
@@ -9602,9 +9699,9 @@ function playItem(kind, item)
 
     local ok = APHPlayItem(kind, item)
     if ok then
-        AphelionSafeNotify("Fitting Room", "▶ " .. APHSafeString(item.name or "Item"), 2)
+        AphelionSafeNotify("Aphelion", "▶ " .. APHSafeString(item.name or "Item"), 2)
     else
-        AphelionSafeNotify("Fitting Room", "Could not play " .. APHSafeString(item.name or "item"), 3)
+        AphelionSafeNotify("Aphelion", "Could not play " .. APHSafeString(item.name or "item"), 3)
     end
 end
 
@@ -9621,31 +9718,41 @@ local function updateScale()
     local cam = workspace.CurrentCamera
     if not cam then return end
     local vp = cam.ViewportSize
-    -- Native sizing is already responsive. UIScale only trims oversized desktop layouts.
-    if vp.X < 500 then
-        RootScale.Scale = math.clamp(vp.X / 430, 0.86, 1)
-    elseif vp.X < 900 then
-        RootScale.Scale = math.clamp(vp.X / 900 + 0.55, 0.85, 1.04)
+    if vp.X <= 430 then
+        RootScale.Scale = math.clamp(vp.X / 430, 0.78, 0.94)
+    elseif vp.X <= 760 then
+        RootScale.Scale = math.clamp(vp.X / 760, 0.84, 0.98)
     else
         RootScale.Scale = 1
     end
+    if Main and Main.Parent then
+        local aspect = vp.X / math.max(vp.Y, 1)
+        if aspect < 0.9 then
+            Main.Size = UDim2.new(0.94, 0, 0.88, 0)
+        elseif vp.X < 700 then
+            Main.Size = UDim2.new(0.95, 0, 0.90, 0)
+        else
+            Main.Size = UDim2.new(0.90, 0, 0.84, 0)
+        end
+    end
 end
-updateScale()
-pcall(function()
-    workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
-end)
 
 local Main = new("Frame", {
     Name = "Main",
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.new(0.96, 0, 0.94, 0),
+    Size = UDim2.new(0.90, 0, 0.84, 0),
     BackgroundColor3 = Theme.Background,
     BackgroundTransparency = 0.03,
 }, Screen)
 round(Main, 20)
 stroke(Main, Theme.Border, 0.18, 1.2)
 gradient(Main, Color3.fromRGB(16, 19, 28), Color3.fromRGB(8, 10, 15), 115)
+
+updateScale()
+pcall(function()
+    workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+end)
 
 local Top = new("Frame", {
     Name = "Top",
@@ -9659,7 +9766,7 @@ local Brand = new("TextLabel", {
     Position = UDim2.fromOffset(4, 1),
     BackgroundTransparency = 1,
     Font = Enum.Font.GothamBold,
-    Text = "FITTING ROOM",
+    Text = "APHELION",
     TextSize = 21,
     TextColor3 = Theme.Text,
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -9699,11 +9806,13 @@ local CloseBtn = topButton("×", Color3.fromRGB(38, 23, 29))
 CloseBtn.AnchorPoint = Vector2.new(1, 0)
 CloseBtn.Position = UDim2.new(1, 0, 0, 2)
 CloseBtn.Size = UDim2.fromOffset(42, 42)
+buttonFX(MinBtn, Theme.Surface2, Theme.CardHover)
+buttonFX(CloseBtn, Color3.fromRGB(38, 23, 29), Color3.fromRGB(70, 32, 42), Color3.fromRGB(58, 28, 38))
 
 local Tabs = new("Frame", {
     Name = "Tabs",
     Size = UDim2.new(1, -20, 0, 43),
-    Position = UDim2.fromOffset(10, 72),
+    Position = UDim2.fromOffset(10, 66),
     BackgroundTransparency = 1,
 }, Main)
 
@@ -9756,8 +9865,8 @@ Top:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeTopAndTabs)
 
 Tools = new("Frame", {
     Name = "Tools",
-    Size = UDim2.new(1, -20, 0, 46),
-    Position = UDim2.fromOffset(10, 120),
+    Size = UDim2.new(1, -20, 0, 42),
+    Position = UDim2.fromOffset(10, 112),
     BackgroundTransparency = 1,
 }, Main)
 
@@ -9782,8 +9891,8 @@ new("UIPadding", {PaddingLeft = UDim.new(0, 15), PaddingRight = UDim.new(0, 12)}
 FavModeBtn = new("TextButton", {
     Name = "FavoriteMode",
     AutoButtonColor = false,
-    Size = UDim2.fromOffset(140, 46),
-    Position = UDim2.new(1, -140, 0, 0),
+    Size = UDim2.fromOffset(132, 42),
+    Position = UDim2.new(1, -132, 0, 0),
     BackgroundColor3 = Theme.Surface2,
     Text = "☆  FAVORITE MODE",
     TextColor3 = Theme.Muted,
@@ -9796,7 +9905,7 @@ stroke(FavModeBtn, Theme.Border, 0.25, 1)
 function resizeTools()
     local w = Tools.AbsoluteSize.X
     local favW = math.clamp(math.floor(w * 0.34), 112, 140)
-    FavModeBtn.Size = UDim2.fromOffset(favW, 46)
+    FavModeBtn.Size = UDim2.fromOffset(favW, 42)
     FavModeBtn.Position = UDim2.new(1, -favW, 0, 0)
     SearchBox.Size = UDim2.new(1, -favW - 8, 1, 0)
     SearchBox.TextSize = w < 360 and 12 or 13
@@ -9808,7 +9917,7 @@ Tools:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeTools)
 Info = new("Frame", {
     Name = "Info",
     Size = UDim2.new(1, -20, 0, 30),
-    Position = UDim2.fromOffset(10, 172),
+    Position = UDim2.fromOffset(10, 160),
     BackgroundTransparency = 1,
 }, Main)
 
@@ -9840,6 +9949,7 @@ RandomBtn = new("TextButton", {
     TextSize = 9,
 }, Utility)
 round(RandomBtn, 9)
+buttonFX(RandomBtn, Theme.Surface2, Theme.CardHover)
 
 StopBtn = new("TextButton", {
     AutoButtonColor = false,
@@ -9851,11 +9961,12 @@ StopBtn = new("TextButton", {
     TextSize = 9,
 }, Utility)
 round(StopBtn, 9)
+buttonFX(StopBtn, Color3.fromRGB(39, 24, 31), Color3.fromRGB(55, 31, 40), Color3.fromRGB(65, 30, 45))
 
 List = new("ScrollingFrame", {
     Name = "Catalog",
-    Size = UDim2.new(1, -20, 1, -270),
-    Position = UDim2.fromOffset(10, 207),
+    Size = UDim2.new(1, -20, 1, -258),
+    Position = UDim2.fromOffset(10, 192),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
     CanvasSize = UDim2.fromOffset(0, 0),
@@ -9888,6 +9999,7 @@ PrevBtn = new("TextButton", {
     Font = Enum.Font.GothamBold, TextSize = 10,
 }, Bottom)
 round(PrevBtn, 11)
+buttonFX(PrevBtn, Theme.Surface2, Theme.CardHover)
 
 PageLabel = new("TextLabel", {
     Size = UDim2.new(1, -180, 1, 0), Position = UDim2.fromOffset(90, 0),
@@ -9902,21 +10014,70 @@ NextBtn = new("TextButton", {
     Font = Enum.Font.GothamBold, TextSize = 10,
 }, Bottom)
 round(NextBtn, 11)
+buttonFX(NextBtn, Theme.Surface2, Theme.CardHover)
 
 FloatingOpen = new("TextButton", {
     Name = "OpenButton",
     Visible = false,
     AnchorPoint = Vector2.new(1, 1),
     Position = UDim2.new(1, -14, 1, -14),
-    Size = UDim2.fromOffset(56, 56),
+    Size = UDim2.fromOffset(58, 58),
     BackgroundColor3 = Theme.Surface2,
     Text = "FR",
     TextColor3 = Theme.Text,
-    Font = Enum.Font.GothamBold,
+    Font = Enum.Font.GothamBlack,
     TextSize = 16,
+    ZIndex = 900,
 }, Screen)
-round(FloatingOpen, 28)
-stroke(FloatingOpen, Theme.Accent, 0.1, 1.5)
+round(FloatingOpen, 29)
+stroke(FloatingOpen, Theme.Accent, 0.08, 1.6)
+buttonFX(FloatingOpen, Theme.Surface2, Color3.fromRGB(29, 49, 75), Color3.fromRGB(35, 65, 96))
+
+local function makeDraggable(guiObject)
+    local dragging = false
+    local dragInput
+    local dragStart
+    local startPos
+    local moved = false
+    local threshold = 7
+
+    guiObject.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        dragging = true
+        moved = false
+        dragStart = input.Position
+        -- Store absolute pixels so a UDim2 scale/anchor at the starting position
+        -- cannot cause the first drag frame to jump.
+        startPos = UDim2.fromOffset(guiObject.AbsolutePosition.X, guiObject.AbsolutePosition.Y)
+        guiObject.AnchorPoint = Vector2.new(0, 0)
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end)
+
+    guiObject.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging or input ~= dragInput or not dragStart or not startPos then return end
+        local delta = input.Position - dragStart
+        if math.abs(delta.X) > threshold or math.abs(delta.Y) > threshold then moved = true end
+        local cam = workspace.CurrentCamera
+        local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+        local size = guiObject.AbsoluteSize
+        local x = math.clamp(startPos.X.Offset + delta.X, 8, math.max(8, vp.X - size.X - 8))
+        local y = math.clamp(startPos.Y.Offset + delta.Y, 8, math.max(8, vp.Y - size.Y - 8))
+        guiObject.AnchorPoint = Vector2.new(0, 0)
+        guiObject.Position = UDim2.fromOffset(x, y)
+    end)
+
+    return function() return moved end
+end
+
+local floatingWasDragged = makeDraggable(FloatingOpen)
 
 function resizeGrid()
     local width = math.max(200, List.AbsoluteSize.X - 2)
@@ -10047,6 +10208,24 @@ function makeCard(kind, item, layoutOrder)
         TextSize = 9,
     }, card)
     round(action, 8)
+    buttonFX(action, Theme.Surface2, Color3.fromRGB(29, 52, 75), Color3.fromRGB(34, 67, 92))
+    buttonFX(fav, Color3.fromRGB(10, 12, 17), Color3.fromRGB(26, 31, 42), Color3.fromRGB(34, 40, 54))
+
+    local cardStroke = card:FindFirstChildOfClass("UIStroke")
+    local cardScale = Instance.new("UIScale")
+    cardScale.Scale = 1
+    cardScale.Name = "HoverScale"
+    cardScale.Parent = card
+    card.MouseEnter:Connect(function()
+        tween(card, 0.14, {BackgroundColor3 = Theme.CardHover})
+        tween(cardScale, 0.14, {Scale = 1.012})
+        if cardStroke then tween(cardStroke, 0.14, {Transparency = 0.08, Thickness = 1.2}) end
+    end)
+    card.MouseLeave:Connect(function()
+        tween(card, 0.18, {BackgroundColor3 = Theme.Card})
+        tween(cardScale, 0.18, {Scale = 1})
+        if cardStroke then tween(cardStroke, 0.18, {Transparency = 0.38, Thickness = 1}) end
+    end)
 
     local function activate()
         playItem(kind, item)
@@ -10207,6 +10386,7 @@ SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
 end)
 
 for id, button in pairs(TabButtons) do
+    buttonFX(button, Theme.Surface2, Color3.fromRGB(27, 42, 61), Color3.fromRGB(31, 51, 76))
     button.Activated:Connect(function()
         UIState.mode = id == "Animations" and "animation" or id == "Emotes" and "emote" or "favorite"
         if UIState.mode == "animation" or UIState.mode == "emote" then
@@ -10261,7 +10441,7 @@ end)
 RandomBtn.Activated:Connect(function()
     local data = getViewData()
     if #data == 0 then
-        AphelionSafeNotify("Fitting Room", "Catalog is still loading.", 2)
+        AphelionSafeNotify("Aphelion", "Catalog is still loading.", 2)
         return
     end
     local entry = data[math.random(1, #data)]
@@ -10278,8 +10458,23 @@ end)
 
 function setMinimized(v)
     UIState.minimized = v == true
-    Main.Visible = not UIState.minimized
-    FloatingOpen.Visible = UIState.minimized
+    if UIState.minimized then
+        local mainScale = Main:FindFirstChild("MinScale") or Instance.new("UIScale")
+        mainScale.Name = "MinScale"
+        mainScale.Scale = 1
+        mainScale.Parent = Main
+        tween(mainScale, 0.16, {Scale = 0.985})
+        task.delay(0.16, function()
+            if UIState.minimized and Main.Parent then Main.Visible = false end
+        end)
+        FloatingOpen.Visible = true
+    else
+        Main.Visible = true
+        local mainScale = Main:FindFirstChild("MinScale")
+        if mainScale then mainScale.Scale = 0.985 end
+        if mainScale then tween(mainScale, 0.22, {Scale = 1}) end
+        FloatingOpen.Visible = false
+    end
 end
 
 MinBtn.Activated:Connect(function()
@@ -10287,6 +10482,7 @@ MinBtn.Activated:Connect(function()
 end)
 
 FloatingOpen.Activated:Connect(function()
+    if floatingWasDragged and floatingWasDragged() then return end
     setMinimized(false)
 end)
 
@@ -10341,7 +10537,7 @@ getgenv().Aphelion.MobileOptimized = true
 getgenv().Aphelion.ThumbnailUI = true
 
 AphelionSafeNotify(
-    "FITTING ROOM | UI",
+    "APHELION | UI",
     "✨ Mobile-first catalog loaded • responsive cards • bundle + emote thumbnails",
     4
 )
@@ -11406,7 +11602,7 @@ function APHX_QueuePlay()
 end
 
 function APHX_Notify(message, duration)
-    AphelionSafeNotify("Fitting Room | Tools", APHX_String(message), duration or 3)
+    AphelionSafeNotify("APHELION | Tools", APHX_String(message), duration or 3)
 end
 
 function APHX_New(className, props, parent)
@@ -11578,7 +11774,7 @@ function APHX_CreateFeaturePanel()
     local title = APHX_Label(header, "✦ APHELION TOOLS", UDim2.new(1, -150, 0, 26), Theme.Text, Enum.Font.GothamBold)
     title.Position = UDim2.fromOffset(2, 0)
     title.TextSize = 17
-    local subtitle = APHX_Label(header, "Mix bundles • save styles • build motion queues", UDim2.new(1, -150, 0, 18), Theme.Muted)
+    local subtitle = APHX_Label(header, "APHELION MIX • save styles • build motion queues", UDim2.new(1, -150, 0, 18), Theme.Muted)
     subtitle.Position = UDim2.fromOffset(3, 28)
     subtitle.TextSize = 9
 
@@ -12069,7 +12265,7 @@ function APHX_RenderVault()
     end
 
     local header = APHX_Label(root,
-        "STYLE VAULT  •  your saved custom bundles", UDim2.new(1, -8, 0, 26), Theme.Text, Enum.Font.GothamBold)
+        "STYLE VAULT  •  your saved APHELION styles", UDim2.new(1, -8, 0, 26), Theme.Text, Enum.Font.GothamBold)
     header.Position = UDim2.fromOffset(4, 0)
     header.TextSize = 13
 
