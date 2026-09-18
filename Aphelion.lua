@@ -5529,7 +5529,7 @@ function playAnimationPreview(animationData)
         end
         State.currentEmoteTrack = track
         if State.speedEmoteEnabled then
-            local speedVal = tonumber(UI.SpeedBox.Text) or Config.EmoteSpeed or 1
+            local speedVal = tonumber(UI and UI.SpeedBox and UI.SpeedBox.Text) or Config.EmoteSpeed or 1
             track:AdjustSpeed(speedVal)
         end
         return true
@@ -6344,7 +6344,7 @@ playEmote = function(humanoid, emoteId)
             State.currentEmoteTrack:Play()
 
             if State.speedEmoteEnabled then
-                local speedValue = tonumber(UI.SpeedBox.Text) or 1
+                local speedValue = tonumber(UI and UI.SpeedBox and UI.SpeedBox.Text) or 1
                 State.currentEmoteTrack:AdjustSpeed(speedValue)
             end
         end
@@ -6361,7 +6361,7 @@ playRandomEmote = function(humanoid, emoteId)
     if ok and track and typeof(track) == "Instance" and track:IsA("AnimationTrack") then
         State.currentEmoteTrack = track
         if State.speedEmoteEnabled then
-            local speedVal = tonumber(UI.SpeedBox.Text) or Config.EmoteSpeed or 1
+            local speedVal = tonumber(UI and UI.SpeedBox and UI.SpeedBox.Text) or Config.EmoteSpeed or 1
             track:AdjustSpeed(speedVal)
         end
     end
@@ -6558,7 +6558,7 @@ function toggleEmoteWalk()
         stopCurrentEmote()
 
         if State.currentEmoteTrack and State.currentEmoteTrack.IsPlaying and State.speedEmoteEnabled then
-            local speedValue = tonumber(UI.SpeedBox.Text) or 1
+            local speedValue = tonumber(UI and UI.SpeedBox and UI.SpeedBox.Text) or 1
             State.currentEmoteTrack:AdjustSpeed(speedValue)
         elseif State.currentEmoteTrack and State.currentEmoteTrack.IsPlaying then
             State.currentEmoteTrack:AdjustSpeed(1)
@@ -6589,7 +6589,7 @@ function toggleSpeedEmote()
     end
 
     Config.EmoteSpeedEnabled = State.speedEmoteEnabled
-    Config.EmoteSpeed = tonumber(UI.SpeedBox.Text) or 1
+    Config.EmoteSpeed = tonumber(UI and UI.SpeedBox and UI.SpeedBox.Text) or 1
     SaveConfig()
 end
 
@@ -6961,7 +6961,7 @@ function connectEvents()
     if UI.SpeedBox then
         table.insert(State.guiConnections, UI.SpeedBox.FocusLost:Connect(function()
             if State.hudEditorActive then return end
-            local speedValue = tonumber(UI.SpeedBox.Text) or 1
+            local speedValue = tonumber(UI and UI.SpeedBox and UI.SpeedBox.Text) or 1
             Config.EmoteSpeed = speedValue
             SaveConfig()
         end))
@@ -9124,7 +9124,12 @@ end
 
 local function AphelionGetVisibleAnimationCards()
     local output = {}
-    local source = State.filteredAnimations or State.originalAnimationsData or {}
+    local source = State.originalAnimationsData or State.animationsData or {}
+    if State.animationSearchTerm and State.animationSearchTerm ~= "" then
+        source = State.filteredAnimations or {}
+    elseif type(State.filteredAnimations) == "table" and #State.filteredAnimations > 0 then
+        source = State.filteredAnimations
+    end
     for _, item in ipairs(source) do
         local card = AphelionGetAnimationBundleCardData(item)
         if card then
@@ -9322,10 +9327,31 @@ local function APHIsFavorite(kind, item)
 end
 
 local function APHGetCurrentList(kind)
+    -- The legacy backend normally keeps filtered* synchronized with the source
+    -- lists, but there is a short window during startup/refresh where those
+    -- tables are empty while the source list is already available.  Never let
+    -- an empty filtered cache hide a populated catalog when no search is active.
     if kind == "animation" then
-        return State.filteredAnimations or State.originalAnimationsData or State.animationsData or {}
+        local source = State.originalAnimationsData or State.animationsData or {}
+        local filtered = State.filteredAnimations
+        if State.animationSearchTerm and State.animationSearchTerm ~= "" then
+            return filtered or {}
+        end
+        if type(filtered) == "table" and #filtered > 0 then
+            return filtered
+        end
+        return source
     end
-    return State.filteredEmotes or State.originalEmotesData or State.emotesData or {}
+
+    local source = State.originalEmotesData or State.emotesData or {}
+    local filtered = State.filteredEmotes
+    if State.emoteSearchTerm and State.emoteSearchTerm ~= "" then
+        return filtered or {}
+    end
+    if type(filtered) == "table" and #filtered > 0 then
+        return filtered
+    end
+    return source
 end
 
 local function APHFilterList(list, term)
@@ -9359,19 +9385,22 @@ end
 local function APHSetSearch(kind, term)
     term = APHSafeString(term)
     if kind == "animation" then
+        State.currentMode = "animation"
         State.animationSearchTerm = term:lower()
-        State.filteredAnimations = APHFilterList(State.originalAnimationsData or State.animationsData, term)
+        State.filteredAnimations = APHFilterList(State.originalAnimationsData or State.animationsData or {}, term)
         State.animationCacheVersion = (State.animationCacheVersion or 0) + 1
         State.emoteCacheVersion = State.emoteCacheVersion or 0
     else
+        State.currentMode = "emote"
         State.emoteSearchTerm = term:lower()
-        State.filteredEmotes = APHFilterList(State.originalEmotesData or State.emotesData, term)
+        State.filteredEmotes = APHFilterList(State.originalEmotesData or State.emotesData or {}, term)
         State.emoteCacheVersion = (State.emoteCacheVersion or 0) + 1
     end
 end
 
 local function APHToggleFavorite(kind, item)
     if not item then return end
+    State.currentMode = kind == "animation" and "animation" or "emote"
     local ok = false
     if kind == "animation" and toggleFavoriteAnimation then
         ok = pcall(function() toggleFavoriteAnimation(item) end)
@@ -9412,6 +9441,7 @@ end
 
 local function APHPlayItem(kind, item)
     if not item or not item.id then return false end
+    State.currentMode = kind == "animation" and "animation" or "emote"
     local _, humanoid = getCharacterAndHumanoid()
     if not humanoid then return false end
 
@@ -9685,6 +9715,7 @@ local TabLayout = new("UIListLayout", {
 }, Tabs)
 
 local TabButtons = {}
+local refreshTabStyle
 local function addTab(id, title)
     local b = new("TextButton", {
         Name = id,
@@ -10178,13 +10209,17 @@ end)
 for id, button in pairs(TabButtons) do
     button.Activated:Connect(function()
         UIState.mode = id == "Animations" and "animation" or id == "Emotes" and "emote" or "favorite"
+        if UIState.mode == "animation" or UIState.mode == "emote" then
+            State.currentMode = UIState.mode
+        end
         UIState.search = ""
         SearchBox.Text = ""
         rebuild()
+        refreshTabStyle()
     end)
 end
 
-local function refreshTabStyle()
+refreshTabStyle = function()
     for id, button in pairs(TabButtons) do
         local active = (id == "Animations" and UIState.mode == "animation")
             or (id == "Emotes" and UIState.mode == "emote")
@@ -10279,6 +10314,9 @@ task.spawn(function()
 end)
 
 refreshTabStyle()
+APHSetSearch("animation", "")
+APHSetSearch("emote", "")
+State.currentMode = "animation"
 rebuild()
 
 -- Wait briefly for the dynamic backend before forcing the first populated render.
@@ -10307,3 +10345,5078 @@ AphelionSafeNotify(
     "✨ Mobile-first catalog loaded • responsive cards • bundle + emote thumbnails",
     4
 )
+
+
+--[[==========================================================================
+    APHELION // FEATURE PACK 5.0
+
+    New player-facing features added without replacing the legacy backend:
+
+      1) MIX STUDIO
+         Build a personal animation bundle by taking individual motion slots
+         from different catalog bundles. Example:
+           Idle  -> Adidas Community
+           Walk  -> Ninja
+           Run   -> Astronaut
+           Jump  -> Stylized
+         The mixed result is stored using the same custom-animation format that
+         the existing backend already understands.
+
+      2) STYLE VAULT
+         Save, duplicate, apply, rename and remove custom mixed styles.  Mix
+         metadata is preserved so a saved style can be reopened in Mix Studio.
+
+      3) MOTION LAB
+         Build a lightweight animation/emote queue and play it in sequence,
+         loop it, shuffle it, or clear it.  Only the current queue is kept in
+         memory; the catalog remains lazily loaded for mobile devices.
+
+    Everything in this block is namespaced with APHX_/APHELION_FEATURES where
+    practical so it does not overwrite the original animation backend.
+============================================================================]]
+
+local APHELION_FEATURES = {
+    Version = "5.0.0",
+    Open = false,
+    ActiveTab = "Mix",
+    Panel = nil,
+    Overlay = nil,
+    Connections = {},
+    Mix = {
+        SelectedSlot = "idle",
+        Query = "",
+        Revision = 0,
+        SourceRevision = 0,
+        Resolved = {},
+        Slots = {},
+        PreviousSnapshots = {},
+        MaxSnapshots = 24,
+        Busy = false,
+    },
+    Vault = {
+        Query = "",
+        Revision = 0,
+        SelectedStyle = nil,
+    },
+    Queue = {
+        Items = {},
+        Playing = false,
+        Loop = true,
+        Shuffle = false,
+        Interval = 2.5,
+        Token = 0,
+        Revision = 0,
+        CurrentIndex = 0,
+    },
+    UI = {
+        MixContent = nil,
+        VaultContent = nil,
+        LabContent = nil,
+        SlotScroll = nil,
+        SourceScroll = nil,
+        SourceSearch = nil,
+        MixStatus = nil,
+        StyleScroll = nil,
+        LabScroll = nil,
+        LabStatus = nil,
+    },
+}
+
+local APHX_SLOT_ORDER = {
+    "idle",
+    "walk",
+    "run",
+    "jump",
+    "fall",
+    "climb",
+    "swimidle",
+    "swim",
+}
+
+local APHX_SLOT_DEFS = {
+    idle = {
+        Label = "IDLE",
+        CategoryNames = {"idle"},
+        AnimationNames = {"Animation1", "Animation2"},
+        Description = "Standing / idle loop",
+    },
+    walk = {
+        Label = "WALK",
+        CategoryNames = {"walk"},
+        AnimationNames = {"WalkAnim"},
+        Description = "Walking cycle",
+    },
+    run = {
+        Label = "RUN",
+        CategoryNames = {"run"},
+        AnimationNames = {"RunAnim"},
+        Description = "Running cycle",
+    },
+    jump = {
+        Label = "JUMP",
+        CategoryNames = {"jump"},
+        AnimationNames = {"JumpAnim"},
+        Description = "Jump start",
+    },
+    fall = {
+        Label = "FALL",
+        CategoryNames = {"fall"},
+        AnimationNames = {"FallAnim"},
+        Description = "Falling cycle",
+    },
+    climb = {
+        Label = "CLIMB",
+        CategoryNames = {"climb"},
+        AnimationNames = {"ClimbAnim"},
+        Description = "Ladder / climbing",
+    },
+    swimidle = {
+        Label = "SWIM IDLE",
+        CategoryNames = {"swimidle", "swimidling", "swimidleloop"},
+        AnimationNames = {"SwimIdle"},
+        Description = "Floating in water",
+    },
+    swim = {
+        Label = "SWIM",
+        CategoryNames = {"swim"},
+        AnimationNames = {"Swim"},
+        Description = "Swimming cycle",
+    },
+}
+
+local function APHX_String(value)
+    if value == nil then
+        return ""
+    end
+    return tostring(value)
+end
+
+local function APHX_Number(value, fallback)
+    local n = tonumber(value)
+    if n == nil then
+        return fallback
+    end
+    return n
+end
+
+local function APHX_Trim(value)
+    return APHX_String(value):match("^%s*(.-)%s*$") or ""
+end
+
+local function APHX_Lower(value)
+    return string.lower(APHX_String(value))
+end
+
+local function APHX_NormalizeId(value)
+    local text = APHX_String(value)
+    text = text:gsub("rbxassetid://", "")
+    text = text:gsub("http://www%.roblox%.com/asset/%?id=", "")
+    text = text:gsub("https://www%.roblox%.com/asset/%?id=", "")
+    return tonumber(text)
+end
+
+local function APHX_IsPositiveId(value)
+    local id = APHX_NormalizeId(value)
+    return id ~= nil and id > 0
+end
+
+local function APHX_SafeCall(fn, ...)
+    if type(fn) ~= "function" then
+        return false, nil
+    end
+    return pcall(fn, ...)
+end
+
+local function APHX_DeepCopy(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local copy = {}
+    for key, child in pairs(value) do
+        copy[key] = APHX_DeepCopy(child)
+    end
+    return copy
+end
+
+local function APHX_ArrayContains(array, value)
+    if type(array) ~= "table" then
+        return false
+    end
+    for _, item in ipairs(array) do
+        if item == value then
+            return true
+        end
+    end
+    return false
+end
+
+local function APHX_TableLength(tbl)
+    if type(tbl) ~= "table" then
+        return 0
+    end
+    local count = 0
+    for _ in pairs(tbl) do
+        count += 1
+    end
+    return count
+end
+
+local function APHX_StableSort(array, comparator)
+    if type(array) ~= "table" then
+        return {}
+    end
+    table.sort(array, comparator)
+    return array
+end
+
+local function APHX_SortText(a, b)
+    return APHX_Lower(a) < APHX_Lower(b)
+end
+
+local function APHX_SlotLabel(slot)
+    local def = APHX_SLOT_DEFS[slot]
+    if def then
+        return def.Label
+    end
+    return string.upper(APHX_String(slot))
+end
+
+local function APHX_CategoryMatches(category, aliases)
+    local cat = APHX_Lower(category):gsub("%s+", "")
+    for _, alias in ipairs(aliases or {}) do
+        if cat == APHX_Lower(alias):gsub("%s+", "") then
+            return true
+        end
+    end
+    return false
+end
+
+local function APHX_MappingAnimationId(mapping)
+    if type(mapping) ~= "table" then
+        return nil
+    end
+    return APHX_NormalizeId(mapping.animationId)
+end
+
+local function APHX_CatalogAnimations()
+    local source = State.originalAnimationsData
+    if type(source) ~= "table" or #source == 0 then
+        source = State.animationsData
+    end
+    if type(source) ~= "table" then
+        return {}
+    end
+    return source
+end
+
+local function APHX_IsBundleCandidate(item)
+    if type(item) ~= "table" then
+        return false
+    end
+    if item.isCustomSet then
+        return true
+    end
+    if type(item.bundledItems) == "table" then
+        return true
+    end
+    return false
+end
+
+local function APHX_GetBundleCandidates(query)
+    query = APHX_Lower(APHX_Trim(query))
+    local source = APHX_CatalogAnimations()
+    local list = {}
+    local seen = {}
+
+    for _, item in ipairs(source) do
+        if APHX_IsBundleCandidate(item) then
+            local key = APHX_String(item.id)
+            if item.isCustomSet then
+                key = "custom:" .. APHX_String(item.customSetName or item.name)
+            end
+            if not seen[key] then
+                local name = APHX_String(item.name or key)
+                local text = APHX_Lower(name .. " " .. APHX_String(item.id))
+                if query == "" or text:find(query, 1, true) then
+                    seen[key] = true
+                    table.insert(list, item)
+                end
+            end
+        end
+    end
+
+    APHX_StableSort(list, function(a, b)
+        local af = APHIsFavorite("animation", a) and 1 or 0
+        local bf = APHIsFavorite("animation", b) and 1 or 0
+        if af ~= bf then
+            return af > bf
+        end
+        return APHX_SortText(a.name or a.id, b.name or b.id)
+    end)
+
+    return list
+end
+
+local function APHX_BundleCacheKey(item)
+    if type(item) ~= "table" then
+        return ""
+    end
+    if item.isCustomSet then
+        return "custom:" .. APHX_String(item.customSetName or item.name)
+    end
+    return "bundle:" .. APHX_String(item.id)
+end
+
+local function APHX_GetResolvedMappings(item)
+    if type(item) ~= "table" then
+        return {}
+    end
+
+    local key = APHX_BundleCacheKey(item)
+    if key == "" then
+        return {}
+    end
+
+    local cached = APHELION_FEATURES.Mix.Resolved[key]
+    if type(cached) == "table" and type(cached.Mappings) == "table" then
+        return cached.Mappings
+    end
+
+    local mappings = {}
+    local ok = false
+
+    if item.isCustomSet then
+        ok, mappings = APHX_SafeCall(function()
+            return buildCustomSetMappings(GetCustomSetName and GetCustomSetName(item) or item.name)
+        end)
+    elseif type(item.bundledItems) == "table" then
+        ok, mappings = APHX_SafeCall(function()
+            local cacheKey = tostring(item.id)
+            local fromCache = State.AnimationCache and State.AnimationCache[cacheKey]
+            if type(fromCache) == "table" and #fromCache > 0 then
+                return fromCache
+            end
+            local resolved = resolveAnimationMappings(item.bundledItems)
+            if State.AnimationCache and type(resolved) == "table" and #resolved > 0 then
+                State.AnimationCache[cacheKey] = resolved
+                if saveAnimationCache then
+                    task.spawn(saveAnimationCache)
+                end
+            end
+            return resolved
+        end)
+    end
+
+    if not ok or type(mappings) ~= "table" then
+        mappings = {}
+    end
+
+    APHELION_FEATURES.Mix.Resolved[key] = {
+        Mappings = mappings,
+        Item = item,
+        Timestamp = tick(),
+    }
+    return mappings
+end
+
+local function APHX_FindMappingsForSlot(mappings, slot)
+    local def = APHX_SLOT_DEFS[slot]
+    if not def or type(mappings) ~= "table" then
+        return {}
+    end
+
+    local matches = {}
+    for _, mapping in ipairs(mappings) do
+        if APHX_CategoryMatches(mapping.category, def.CategoryNames) then
+            table.insert(matches, mapping)
+        end
+    end
+
+    APHX_StableSort(matches, function(a, b)
+        local an = APHX_Lower(a.name)
+        local bn = APHX_Lower(b.name)
+        local ap = 999
+        local bp = 999
+        for index, desired in ipairs(def.AnimationNames or {}) do
+            local wanted = APHX_Lower(desired)
+            if an == wanted then ap = index end
+            if bn == wanted then bp = index end
+        end
+        if ap ~= bp then
+            return ap < bp
+        end
+        return an < bn
+    end)
+
+    return matches
+end
+
+local function APHX_ExtractSlotValue(item, slot)
+    local mappings = APHX_GetResolvedMappings(item)
+    local matches = APHX_FindMappingsForSlot(mappings, slot)
+    if #matches == 0 then
+        return nil, matches
+    end
+    return matches[1], matches
+end
+
+local function APHX_NewEmptyMix()
+    local mix = {
+        idle = {Animation1 = 0, Animation2 = 0},
+        walk = {WalkAnim = 0},
+        run = {RunAnim = 0},
+        jump = {JumpAnim = 0},
+        fall = {FallAnim = 0},
+        climb = {ClimbAnim = 0},
+        swimidle = {SwimIdle = 0},
+        swim = {Swim = 0},
+        __meta = {
+            IconImage = DEFAULT_IDLE_ICON_ID,
+            IconColor = ColorToTable(DEFAULT_IDLE_ICON_COLOR),
+            FeaturePack = "MixStudio",
+            FeatureVersion = APHELION_FEATURES.Version,
+            Sources = {},
+            MixMeta = {
+                CreatedAt = os.time(),
+                CreatedWith = APHELION_FEATURES.Version,
+                Slots = {},
+            },
+        },
+    }
+    return mix
+end
+
+local function APHX_MixHasContent(mix)
+    if type(mix) ~= "table" then
+        return false
+    end
+    for _, slot in ipairs(APHX_SLOT_ORDER) do
+        local data = mix[slot]
+        if type(data) == "table" then
+            for _, id in pairs(data) do
+                if APHX_IsPositiveId(id) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function APHX_MixFilledSlots(mix)
+    local total = 0
+    for _, slot in ipairs(APHX_SLOT_ORDER) do
+        local data = type(mix) == "table" and mix[slot] or nil
+        local filled = false
+        if type(data) == "table" then
+            for _, id in pairs(data) do
+                if APHX_IsPositiveId(id) then
+                    filled = true
+                    break
+                end
+            end
+        end
+        if filled then
+            total += 1
+        end
+    end
+    return total
+end
+
+local function APHX_CopyMix(mix)
+    return APHX_DeepCopy(mix)
+end
+
+local function APHX_PushMixSnapshot(reason)
+    local snapshot = {
+        Reason = reason or "edit",
+        Timestamp = os.time(),
+        Data = APHX_CopyMix(APHELION_FEATURES.Mix.Slots),
+    }
+    table.insert(APHELION_FEATURES.Mix.PreviousSnapshots, snapshot)
+    while #APHELION_FEATURES.Mix.PreviousSnapshots > APHELION_FEATURES.Mix.MaxSnapshots do
+        table.remove(APHELION_FEATURES.Mix.PreviousSnapshots, 1)
+    end
+end
+
+local function APHX_UndoMix()
+    local history = APHELION_FEATURES.Mix.PreviousSnapshots
+    local snapshot = history[#history]
+    if not snapshot then
+        return false
+    end
+    table.remove(history, #history)
+    APHELION_FEATURES.Mix.Slots = APHX_CopyMix(snapshot.Data)
+    APHELION_FEATURES.Mix.Revision += 1
+    return true
+end
+
+local function APHX_ResetMix()
+    APHX_PushMixSnapshot("reset")
+    APHELION_FEATURES.Mix.Slots = APHX_NewEmptyMix()
+    APHELION_FEATURES.Mix.Revision += 1
+end
+
+local function APHX_CopySourceIntoSlot(item, slot)
+    if not item or not APHX_SLOT_DEFS[slot] then
+        return false, "Invalid source or slot"
+    end
+
+    APHX_PushMixSnapshot("assign:" .. slot)
+
+    local mapping, matches = APHX_ExtractSlotValue(item, slot)
+    if not mapping then
+        return false, "This bundle does not contain " .. APHX_SlotLabel(slot)
+    end
+
+    local mix = APHELION_FEATURES.Mix.Slots
+    local sourceKey = APHX_BundleCacheKey(item)
+    local sourceName = APHX_String(item.name or item.id)
+    mix.__meta = mix.__meta or {}
+    mix.__meta.Sources = mix.__meta.Sources or {}
+    mix.__meta = mix.__meta or {}
+    mix.__meta.MixMeta = mix.__meta.MixMeta or {Slots = {}}
+    mix.__meta.MixMeta.Slots = mix.__meta.MixMeta.Slots or {}
+
+    if slot == "idle" then
+        mix.idle = mix.idle or {Animation1 = 0, Animation2 = 0}
+        mix.idle.Animation1 = APHX_NormalizeId(matches[1] and matches[1].animationId) or 0
+        mix.idle.Animation2 = APHX_NormalizeId(matches[2] and matches[2].animationId) or 0
+    elseif slot == "walk" then
+        mix.walk = mix.walk or {WalkAnim = 0}
+        mix.walk.WalkAnim = APHX_NormalizeId(mapping.animationId) or 0
+    elseif slot == "run" then
+        mix.run = mix.run or {RunAnim = 0}
+        mix.run.RunAnim = APHX_NormalizeId(mapping.animationId) or 0
+    elseif slot == "jump" then
+        mix.jump = mix.jump or {JumpAnim = 0}
+        mix.jump.JumpAnim = APHX_NormalizeId(mapping.animationId) or 0
+    elseif slot == "fall" then
+        mix.fall = mix.fall or {FallAnim = 0}
+        mix.fall.FallAnim = APHX_NormalizeId(mapping.animationId) or 0
+    elseif slot == "climb" then
+        mix.climb = mix.climb or {ClimbAnim = 0}
+        mix.climb.ClimbAnim = APHX_NormalizeId(mapping.animationId) or 0
+    elseif slot == "swimidle" then
+        mix.swimidle = mix.swimidle or {SwimIdle = 0}
+        mix.swimidle.SwimIdle = APHX_NormalizeId(mapping.animationId) or 0
+    elseif slot == "swim" then
+        mix.swim = mix.swim or {Swim = 0}
+        mix.swim.Swim = APHX_NormalizeId(mapping.animationId) or 0
+    end
+
+    mix.__meta.Sources[slot] = {
+        Key = sourceKey,
+        Id = APHX_NormalizeId(item.id),
+        Name = sourceName,
+        IsCustomSet = item.isCustomSet == true,
+    }
+    mix.__meta.MixMeta.Slots[slot] = {
+        SourceKey = sourceKey,
+        SourceName = sourceName,
+        SourceId = APHX_NormalizeId(item.id),
+        MappingNames = {},
+    }
+    for _, m in ipairs(matches) do
+        table.insert(mix.__meta.MixMeta.Slots[slot].MappingNames, APHX_String(m.name))
+    end
+
+    APHELION_FEATURES.Mix.Revision += 1
+    return true, APHX_SlotLabel(slot) .. " ← " .. sourceName
+end
+
+local function APHX_ClearMixSlot(slot)
+    if not APHX_SLOT_DEFS[slot] then
+        return false
+    end
+    APHX_PushMixSnapshot("clear:" .. slot)
+    local mix = APHELION_FEATURES.Mix.Slots
+    if slot == "idle" then
+        mix.idle = {Animation1 = 0, Animation2 = 0}
+    elseif slot == "walk" then
+        mix.walk = {WalkAnim = 0}
+    elseif slot == "run" then
+        mix.run = {RunAnim = 0}
+    elseif slot == "jump" then
+        mix.jump = {JumpAnim = 0}
+    elseif slot == "fall" then
+        mix.fall = {FallAnim = 0}
+    elseif slot == "climb" then
+        mix.climb = {ClimbAnim = 0}
+    elseif slot == "swimidle" then
+        mix.swimidle = {SwimIdle = 0}
+    elseif slot == "swim" then
+        mix.swim = {Swim = 0}
+    end
+    if mix.__meta and mix.__meta.Sources then
+        mix.__meta.Sources[slot] = nil
+    end
+    if mix.__meta and mix.__meta.MixMeta and mix.__meta.MixMeta.Slots then
+        mix.__meta.MixMeta.Slots[slot] = nil
+    end
+    APHELION_FEATURES.Mix.Revision += 1
+    return true
+end
+
+local function APHX_FillMissingFromItem(item)
+    if not item then
+        return 0
+    end
+    local before = APHX_MixFilledSlots(APHELION_FEATURES.Mix.Slots)
+    for _, slot in ipairs(APHX_SLOT_ORDER) do
+        local existing = false
+        local current = APHELION_FEATURES.Mix.Slots[slot]
+        if type(current) == "table" then
+            for _, id in pairs(current) do
+                if APHX_IsPositiveId(id) then
+                    existing = true
+                    break
+                end
+            end
+        end
+        if not existing then
+            APHX_CopySourceIntoSlot(item, slot)
+        end
+    end
+    local after = APHX_MixFilledSlots(APHELION_FEATURES.Mix.Slots)
+    return math.max(0, after - before)
+end
+
+local function APHX_ExtractSetSources(setData)
+    local out = {}
+    if type(setData) ~= "table" then
+        return out
+    end
+    local meta = setData.__meta and setData.__meta.MixMeta and setData.__meta.MixMeta.Slots
+    if type(meta) ~= "table" then
+        meta = setData.__meta and setData.__meta.Sources
+    end
+    if type(meta) == "table" then
+        for slot, source in pairs(meta) do
+            if type(source) == "table" then
+                out[slot] = APHX_DeepCopy(source)
+            end
+        end
+    end
+    return out
+end
+
+local function APHX_SelectMixFromExistingSet(name)
+    local set = State.CustomAnimations
+        and State.CustomAnimations.Sets
+        and State.CustomAnimations.Sets[name]
+    if not set then
+        return false, "Style not found"
+    end
+    APHX_PushMixSnapshot("load-style:" .. name)
+    APHELION_FEATURES.Mix.Slots = APHX_DeepCopy(set)
+    local selected = APHX_ExtractSetSources(set)
+    APHELION_FEATURES.Mix.Slots.__meta = APHELION_FEATURES.Mix.Slots.__meta or {}
+    APHELION_FEATURES.Mix.Slots.__meta.Sources = APHELION_FEATURES.Mix.Slots.__meta.Sources or selected
+    APHELION_FEATURES.Mix.Revision += 1
+    return true, "Loaded " .. name
+end
+
+local function APHX_MakeSetName(desired)
+    desired = APHX_Trim(desired)
+    if desired == "" then
+        desired = "My Mix"
+    end
+    local sets = State.CustomAnimations and State.CustomAnimations.Sets or {}
+    return MakeUniqueSetName(sets, desired)
+end
+
+local function APHX_EnsureCustomAnimationState()
+    State.CustomAnimations = NormalizeCustomAnimationData(State.CustomAnimations)
+    if not State.CustomAnimations.Sets.Default then
+        State.CustomAnimations.Sets.Default = APHX_NewEmptyMix()
+        State.CustomAnimations.Order = State.CustomAnimations.Order or {"Default"}
+        if not APHX_ArrayContains(State.CustomAnimations.Order, "Default") then
+            table.insert(State.CustomAnimations.Order, 1, "Default")
+        end
+    end
+    return State.CustomAnimations
+end
+
+local function APHX_SaveStyle(name, overwrite)
+    APHX_EnsureCustomAnimationState()
+    if not APHX_MixHasContent(APHELION_FEATURES.Mix.Slots) then
+        return false, "Fill at least one motion slot first"
+    end
+
+    local targetName = APHX_Trim(name)
+    if targetName == "" then
+        return false, "Enter a name"
+    end
+
+    local sets = State.CustomAnimations.Sets
+    if sets[targetName] and not overwrite then
+        targetName = APHX_MakeSetName(targetName)
+    end
+
+    local mix = APHX_DeepCopy(APHELION_FEATURES.Mix.Slots)
+    mix.__meta = mix.__meta or {}
+    mix.__meta.FeaturePack = "MixStudio"
+    mix.__meta.FeatureVersion = APHELION_FEATURES.Version
+    mix.__meta.SavedAt = os.time()
+    mix.__meta.DisplayName = targetName
+    mix.__meta.MixMeta = mix.__meta.MixMeta or {}
+    mix.__meta.MixMeta.SavedName = targetName
+    mix.__meta.MixMeta.SavedAt = os.time()
+
+    sets[targetName] = mix
+    if not APHX_ArrayContains(State.CustomAnimations.Order, targetName) then
+        table.insert(State.CustomAnimations.Order, targetName)
+    end
+
+    State.CustomAnimations.Selected = targetName
+    State.currentCustomAnimationName = targetName
+    State.SaveCustomAnimations(State.CustomAnimations)
+
+    if State.CustomAnimDropdown then
+        pcall(function()
+            State.CustomAnimDropdown.Refresh(State.CustomAnimations.Order)
+            if State.CustomAnimDropdown.Button then
+                State.CustomAnimDropdown.Button.Text = targetName .. "  ▼"
+            end
+        end)
+    end
+
+    if State.RefreshCustomAnimUI then
+        pcall(State.RefreshCustomAnimUI)
+    end
+    if State.ApplyCustomAnimIconUI then
+        pcall(State.ApplyCustomAnimIconUI)
+    end
+    if refreshCustomAnimationState then
+        task.spawn(function()
+            pcall(refreshCustomAnimationState, false)
+        end)
+    end
+
+    return true, targetName
+end
+
+local function APHX_DeleteStyle(name)
+    APHX_EnsureCustomAnimationState()
+    if not name or name == "Default" then
+        return false, "Default cannot be deleted"
+    end
+    if not State.CustomAnimations.Sets[name] then
+        return false, "Style not found"
+    end
+    State.CustomAnimations.Sets[name] = nil
+    local index = table.find(State.CustomAnimations.Order, name)
+    if index then
+        table.remove(State.CustomAnimations.Order, index)
+    end
+    if State.currentCustomAnimationName == name then
+        State.currentCustomAnimationName = "Default"
+        State.CustomAnimations.Selected = "Default"
+    end
+    State.SaveCustomAnimations(State.CustomAnimations)
+    if State.CustomAnimDropdown then
+        pcall(function()
+            State.CustomAnimDropdown.Refresh(State.CustomAnimations.Order)
+            if State.CustomAnimDropdown.Button then
+                State.CustomAnimDropdown.Button.Text = State.currentCustomAnimationName .. "  ▼"
+            end
+        end)
+    end
+    if refreshCustomAnimationState then
+        task.spawn(function()
+            pcall(refreshCustomAnimationState, false)
+        end)
+    end
+    return true, "Deleted " .. name
+end
+
+local function APHX_ApplyStyle(name)
+    APHX_EnsureCustomAnimationState()
+    local set = State.CustomAnimations.Sets[name]
+    if not set then
+        return false, "Style not found"
+    end
+    local pseudo = {
+        id = -math.abs(tonumber(string.match(name, "%d+$")) or math.random(100000, 999999)),
+        name = name,
+        customSetName = name,
+        isCustomSet = true,
+        bundledItems = {"Custom-Animation"},
+    }
+    local ok, err = APHX_SafeCall(function()
+        applyAnimation(pseudo)
+    end)
+    if not ok then
+        return false, APHX_String(err)
+    end
+    State.currentCustomAnimationName = name
+    State.CustomAnimations.Selected = name
+    State.SaveCustomAnimations(State.CustomAnimations)
+    return true, "Applied " .. name
+end
+
+local function APHX_SaveCurrentMixAs(desired)
+    local ok, name = APHX_SaveStyle(desired, false)
+    if ok then
+        APHX_ApplyStyle(name)
+    end
+    return ok, name
+end
+
+local function APHX_ExportStyle(name)
+    APHX_EnsureCustomAnimationState()
+    local set = State.CustomAnimations.Sets[name]
+    if not set then
+        return nil, "Style not found"
+    end
+    local payload = {
+        Type = "AphelionMixStyle",
+        Version = APHELION_FEATURES.Version,
+        Name = name,
+        Data = APHX_DeepCopy(set),
+    }
+    local ok, json = APHX_SafeCall(function()
+        return HttpService:JSONEncode(payload)
+    end)
+    if not ok then
+        return nil, "JSON encode failed"
+    end
+    return json
+end
+
+local function APHX_ImportStyle(jsonText, desiredName)
+    local ok, decoded = APHX_SafeCall(function()
+        return HttpService:JSONDecode(jsonText)
+    end)
+    if not ok or type(decoded) ~= "table" then
+        return false, "Invalid JSON"
+    end
+    if decoded.Type and decoded.Type ~= "AphelionMixStyle" and decoded.Type ~= "CustomAnimationSet" then
+        return false, "Unsupported style type"
+    end
+    local data = decoded.Data or decoded.data or decoded.Set
+    if type(data) ~= "table" then
+        return false, "No animation data found"
+    end
+    APHX_EnsureCustomAnimationState()
+    local sourceName = APHX_String(decoded.Name or desiredName or "Imported Style")
+    local targetName = APHX_MakeSetName(desiredName or sourceName)
+    data.__meta = data.__meta or {}
+    data.__meta.FeaturePack = "MixStudio"
+    data.__meta.ImportedAt = os.time()
+    State.CustomAnimations.Sets[targetName] = data
+    table.insert(State.CustomAnimations.Order, targetName)
+    State.CustomAnimations.Selected = targetName
+    State.currentCustomAnimationName = targetName
+    State.SaveCustomAnimations(State.CustomAnimations)
+    if State.CustomAnimDropdown then
+        pcall(function()
+            State.CustomAnimDropdown.Refresh(State.CustomAnimations.Order)
+            if State.CustomAnimDropdown.Button then
+                State.CustomAnimDropdown.Button.Text = targetName .. "  ▼"
+            end
+        end)
+    end
+    return true, targetName
+end
+
+local function APHX_QueueEntry(kind, item)
+    if not item then
+        return nil
+    end
+    local entry = {
+        kind = kind == "emote" and "emote" or "animation",
+        id = item.id,
+        name = APHX_String(item.name or item.id),
+        bundledItems = APHX_DeepCopy(item.bundledItems),
+        isCustomSet = item.isCustomSet == true,
+        customSetName = item.customSetName,
+        offsale = item.offsale == true,
+        addedAt = os.time(),
+    }
+    return entry
+end
+
+local function APHX_QueueAdd(kind, item)
+    local entry = APHX_QueueEntry(kind, item)
+    if not entry then
+        return false
+    end
+    if #APHELION_FEATURES.Queue.Items >= 32 then
+        table.remove(APHELION_FEATURES.Queue.Items, 1)
+    end
+    table.insert(APHELION_FEATURES.Queue.Items, entry)
+    APHELION_FEATURES.Queue.Revision += 1
+    return true
+end
+
+local function APHX_QueueRemove(index)
+    index = math.floor(tonumber(index) or 0)
+    if index < 1 or index > #APHELION_FEATURES.Queue.Items then
+        return false
+    end
+    table.remove(APHELION_FEATURES.Queue.Items, index)
+    APHELION_FEATURES.Queue.Revision += 1
+    return true
+end
+
+local function APHX_QueueClear()
+    APHELION_FEATURES.Queue.Items = {}
+    APHELION_FEATURES.Queue.CurrentIndex = 0
+    APHELION_FEATURES.Queue.Revision += 1
+end
+
+local function APHX_QueueAddRandom(count)
+    count = math.max(1, math.floor(tonumber(count) or 1))
+    local source = getViewData()
+    if type(source) ~= "table" or #source == 0 then
+        return 0
+    end
+    local added = 0
+    for _ = 1, count do
+        local entry = source[math.random(1, #source)]
+        if UIState.mode == "favorite" then
+            if APHX_QueueAdd(entry.kind, entry.item) then
+                added += 1
+            end
+        else
+            if APHX_QueueAdd(UIState.mode, entry) then
+                added += 1
+            end
+        end
+    end
+    return added
+end
+
+local function APHX_QueueAddFavorites()
+    local added = 0
+    for _, item in ipairs(State.favoriteAnimations or {}) do
+        if APHX_QueueAdd("animation", item) then
+            added += 1
+        end
+    end
+    for _, item in ipairs(State.favoriteEmotes or {}) do
+        if APHX_QueueAdd("emote", item) then
+            added += 1
+        end
+    end
+    return added
+end
+
+local function APHX_QueueStop()
+    APHELION_FEATURES.Queue.Playing = false
+    APHELION_FEATURES.Queue.Token += 1
+    pcall(stopCurrentEmote)
+    pcall(stopEmotes)
+end
+
+local function APHX_QueueShuffledOrder()
+    local order = {}
+    for i = 1, #APHELION_FEATURES.Queue.Items do
+        table.insert(order, i)
+    end
+    for i = #order, 2, -1 do
+        local j = math.random(1, i)
+        order[i], order[j] = order[j], order[i]
+    end
+    return order
+end
+
+local function APHX_QueuePlay()
+    if APHELION_FEATURES.Queue.Playing then
+        return false, "Queue is already playing"
+    end
+    if #APHELION_FEATURES.Queue.Items == 0 then
+        return false, "Queue is empty"
+    end
+
+    APHELION_FEATURES.Queue.Playing = true
+    APHELION_FEATURES.Queue.Token += 1
+    local token = APHELION_FEATURES.Queue.Token
+    local startedAt = tick()
+
+    task.spawn(function()
+        local cycle = 0
+        while APHELION_FEATURES.Queue.Playing and token == APHELION_FEATURES.Queue.Token do
+            cycle += 1
+            local order
+            if APHELION_FEATURES.Queue.Shuffle then
+                order = APHX_QueueShuffledOrder()
+            else
+                order = {}
+                for i = 1, #APHELION_FEATURES.Queue.Items do
+                    table.insert(order, i)
+                end
+            end
+
+            if #order == 0 then
+                break
+            end
+
+            for _, index in ipairs(order) do
+                if not APHELION_FEATURES.Queue.Playing or token ~= APHELION_FEATURES.Queue.Token then
+                    break
+                end
+                local entry = APHELION_FEATURES.Queue.Items[index]
+                if entry then
+                    APHELION_FEATURES.Queue.CurrentIndex = index
+                    APHELION_FEATURES.Queue.Revision += 1
+                    local playable = {
+                        id = entry.id,
+                        name = entry.name,
+                        bundledItems = entry.bundledItems,
+                        isCustomSet = entry.isCustomSet,
+                        customSetName = entry.customSetName,
+                    }
+                    pcall(function()
+                        APHPlayItem(entry.kind, playable)
+                    end)
+                    local waitTime = math.clamp(tonumber(APHELION_FEATURES.Queue.Interval) or 2.5, 0.6, 30)
+                    local untilTime = tick() + waitTime
+                    while tick() < untilTime do
+                        if not APHELION_FEATURES.Queue.Playing or token ~= APHELION_FEATURES.Queue.Token then
+                            break
+                        end
+                        task.wait(0.1)
+                    end
+                end
+            end
+
+            if not APHELION_FEATURES.Queue.Loop then
+                break
+            end
+            if cycle >= 100 then
+                break
+            end
+        end
+
+        if token == APHELION_FEATURES.Queue.Token then
+            APHELION_FEATURES.Queue.Playing = false
+            APHELION_FEATURES.Queue.CurrentIndex = 0
+            pcall(stopCurrentEmote)
+        end
+
+        local elapsed = tick() - startedAt
+        if elapsed < 0 then
+            APHELION_FEATURES.Queue.Playing = false
+        end
+    end)
+    return true, "Queue started"
+end
+
+local function APHX_Notify(message, duration)
+    AphelionSafeNotify("Fitting Room | Tools", APHX_String(message), duration or 3)
+end
+
+local function APHX_New(className, props, parent)
+    return new(className, props, parent)
+end
+
+local function APHX_Round(obj, radius)
+    if obj then
+        pcall(round, obj, radius)
+    end
+    return obj
+end
+
+local function APHX_Stroke(obj, color, transparency, thickness)
+    if obj then
+        pcall(stroke, obj, color, transparency, thickness)
+    end
+    return obj
+end
+
+local function APHX_Gradient(obj, c1, c2, rotation)
+    if obj then
+        pcall(gradient, obj, c1, c2, rotation)
+    end
+    return obj
+end
+
+local function APHX_Button(parent, text, width, height)
+    local button = APHX_New("TextButton", {
+        AutoButtonColor = false,
+        Size = UDim2.fromOffset(width or 80, height or 36),
+        BackgroundColor3 = Theme.Surface2,
+        Text = text or "BUTTON",
+        TextColor3 = Theme.Text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 10,
+    }, parent)
+    APHX_Round(button, 10)
+    APHX_Stroke(button, Theme.Border, 0.25, 1)
+    return button
+end
+
+local function APHX_Label(parent, text, size, color, font)
+    return APHX_New("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = size or UDim2.new(1, 0, 0, 24),
+        Text = text or "",
+        TextColor3 = color or Theme.Text,
+        Font = font or Enum.Font.GothamMedium,
+        TextSize = 10,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+    }, parent)
+end
+
+local function APHX_MakeDivider(parent, y)
+    return APHX_New("Frame", {
+        Position = UDim2.fromOffset(8, y or 0),
+        Size = UDim2.new(1, -16, 0, 1),
+        BorderSizePixel = 0,
+        BackgroundColor3 = Theme.Border,
+        BackgroundTransparency = 0.45,
+    }, parent)
+end
+
+local function APHX_CreatePrompt(parent, titleText, placeholder, defaultText)
+    local overlay = APHX_New("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 0.35,
+        ZIndex = 900,
+    }, parent)
+    local box = APHX_New("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.new(0.86, 0, 0, 180),
+        BackgroundColor3 = Theme.Surface,
+        ZIndex = 901,
+    }, overlay)
+    APHX_Round(box, 16)
+    APHX_Stroke(box, Theme.Border, 0.12, 1.2)
+    APHX_Gradient(box, Color3.fromRGB(25, 30, 40), Color3.fromRGB(12, 15, 21), 120)
+
+    local title = APHX_Label(box, titleText or "ENTER VALUE", UDim2.new(1, -30, 0, 28), Theme.Text, Enum.Font.GothamBold)
+    title.Position = UDim2.fromOffset(15, 12)
+    title.TextSize = 14
+
+    local input = APHX_New("TextBox", {
+        Size = UDim2.new(1, -30, 0, 42),
+        Position = UDim2.fromOffset(15, 55),
+        BackgroundColor3 = Theme.Background,
+        TextColor3 = Theme.Text,
+        PlaceholderColor3 = Theme.Muted,
+        PlaceholderText = placeholder or "Enter name...",
+        Text = defaultText or "",
+        ClearTextOnFocus = false,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 902,
+    }, box)
+    APHX_Round(input, 10)
+    APHX_Stroke(input, Theme.Border, 0.25, 1)
+    APHX_New("UIPadding", {PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12)}, input)
+
+    local cancel = APHX_Button(box, "CANCEL", 90, 36)
+    cancel.Position = UDim2.new(1, -195, 1, -52)
+    cancel.ZIndex = 902
+    local confirm = APHX_Button(box, "CONFIRM", 90, 36)
+    confirm.Position = UDim2.new(1, -100, 1, -52)
+    confirm.BackgroundColor3 = Theme.Accent
+    confirm.TextColor3 = Color3.new(1, 1, 1)
+    confirm.ZIndex = 902
+
+    local state = {Closed = false}
+    local function close()
+        if state.Closed then
+            return
+        end
+        state.Closed = true
+        pcall(overlay.Destroy, overlay)
+    end
+
+    cancel.Activated:Connect(close)
+    return {
+        Overlay = overlay,
+        Input = input,
+        Confirm = confirm,
+        Cancel = cancel,
+        Close = close,
+    }
+end
+
+local function APHX_CreateFeaturePanel()
+    if APHELION_FEATURES.Panel and APHELION_FEATURES.Panel.Parent then
+        return APHELION_FEATURES.Panel
+    end
+
+    local overlay = APHX_New("Frame", {
+        Name = "FeatureOverlay",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 0.52,
+        ZIndex = 700,
+    }, Screen)
+    APHELION_FEATURES.Overlay = overlay
+
+    local panel = APHX_New("Frame", {
+        Name = "FeaturePanel",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.new(0.94, 0, 0.86, 0),
+        BackgroundColor3 = Theme.Background,
+        ZIndex = 701,
+    }, overlay)
+    APHX_Round(panel, 20)
+    APHX_Stroke(panel, Theme.Border, 0.08, 1.2)
+    APHX_Gradient(panel, Color3.fromRGB(19, 23, 32), Color3.fromRGB(7, 10, 15), 115)
+    APHELION_FEATURES.Panel = panel
+
+    local header = APHX_New("Frame", {
+        Size = UDim2.new(1, -20, 0, 56),
+        Position = UDim2.fromOffset(10, 10),
+        BackgroundTransparency = 1,
+        ZIndex = 702,
+    }, panel)
+
+    local title = APHX_Label(header, "✦ APHELION TOOLS", UDim2.new(1, -150, 0, 26), Theme.Text, Enum.Font.GothamBold)
+    title.Position = UDim2.fromOffset(2, 0)
+    title.TextSize = 17
+    local subtitle = APHX_Label(header, "Mix bundles • save styles • build motion queues", UDim2.new(1, -150, 0, 18), Theme.Muted)
+    subtitle.Position = UDim2.fromOffset(3, 28)
+    subtitle.TextSize = 9
+
+    local close = APHX_Button(header, "×", 42, 42)
+    close.Position = UDim2.new(1, -42, 0, 0)
+    close.BackgroundColor3 = Color3.fromRGB(42, 24, 30)
+    close.TextColor3 = Theme.Danger
+    close.TextSize = 19
+    close.Activated:Connect(function()
+        if APHELION_FEATURES.Overlay then
+            APHELION_FEATURES.Overlay.Visible = false
+        end
+        APHELION_FEATURES.Open = false
+    end)
+
+    local tabs = APHX_New("Frame", {
+        Size = UDim2.new(1, -20, 0, 40),
+        Position = UDim2.fromOffset(10, 68),
+        BackgroundTransparency = 1,
+        ZIndex = 702,
+    }, panel)
+    local tabLayout = APHX_New("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 6),
+        HorizontalAlignment = Enum.HorizontalAlignment.Left,
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+    }, tabs)
+
+    local tabButtons = {}
+    local function addFeatureTab(id, label)
+        local b = APHX_Button(tabs, label, 96, 40)
+        b.Name = id .. "Tab"
+        tabButtons[id] = b
+        return b
+    end
+    addFeatureTab("Mix", "MIX STUDIO")
+    addFeatureTab("Vault", "STYLE VAULT")
+    addFeatureTab("Lab", "MOTION LAB")
+
+    local content = APHX_New("Frame", {
+        Size = UDim2.new(1, -20, 1, -120),
+        Position = UDim2.fromOffset(10, 114),
+        BackgroundTransparency = 1,
+        ZIndex = 702,
+    }, panel)
+
+    APHELION_FEATURES.UI.MixContent = APHX_New("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Visible = true,
+        ZIndex = 703,
+    }, content)
+    APHELION_FEATURES.UI.VaultContent = APHX_New("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Visible = false,
+        ZIndex = 703,
+    }, content)
+    APHELION_FEATURES.UI.LabContent = APHX_New("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Visible = false,
+        ZIndex = 703,
+    }, content)
+
+    local function switchFeatureTab(id)
+        APHELION_FEATURES.ActiveTab = id
+        APHELION_FEATURES.UI.MixContent.Visible = id == "Mix"
+        APHELION_FEATURES.UI.VaultContent.Visible = id == "Vault"
+        APHELION_FEATURES.UI.LabContent.Visible = id == "Lab"
+        for tabId, button in pairs(tabButtons) do
+            local active = tabId == id
+            button.BackgroundColor3 = active and Color3.fromRGB(33, 56, 84) or Theme.Surface2
+            button.TextColor3 = active and Theme.Accent or Theme.Muted
+        end
+        if id == "Mix" then
+            APHX_RenderMixSources()
+            APHX_RenderMixSlots()
+        elseif id == "Vault" then
+            APHX_RenderVault()
+        else
+            APHX_RenderLab()
+        end
+    end
+
+    for id, button in pairs(tabButtons) do
+        button.Activated:Connect(function()
+            switchFeatureTab(id)
+        end)
+    end
+
+    switchFeatureTab("Mix")
+    return panel
+end
+
+function APHX_OpenTools(tabName)
+    local panel = APHX_CreateFeaturePanel()
+    APHELION_FEATURES.Open = true
+    panel.Visible = true
+    if APHELION_FEATURES.Overlay then
+        APHELION_FEATURES.Overlay.Visible = true
+    end
+    local target = tabName or APHELION_FEATURES.ActiveTab or "Mix"
+    APHELION_FEATURES.ActiveTab = target
+    if target == "Mix" then
+        APHX_RenderMixSources()
+        APHX_RenderMixSlots()
+    elseif target == "Vault" then
+        APHX_RenderVault()
+    else
+        APHX_RenderLab()
+    end
+end
+
+local function APHX_MixSlotValueText(slot)
+    local mix = APHELION_FEATURES.Mix.Slots or {}
+    local data = mix[slot]
+    if type(data) ~= "table" then
+        return "EMPTY"
+    end
+    local ids = {}
+    for _, id in pairs(data) do
+        if APHX_IsPositiveId(id) then
+            table.insert(ids, APHX_String(id))
+        end
+    end
+    if #ids == 0 then
+        return "EMPTY"
+    end
+    if #ids == 1 then
+        return ids[1]
+    end
+    return ids[1] .. " + " .. ids[2]
+end
+
+function APHX_RenderMixSlots()
+    local root = APHELION_FEATURES.UI.MixContent
+    if not root or not root.Parent then
+        return
+    end
+
+    for _, child in ipairs(root:GetChildren()) do
+        if child.Name == "MixDynamic" then
+            child:Destroy()
+        end
+    end
+
+    local holder = APHX_New("Frame", {
+        Name = "MixDynamic",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        ZIndex = 704,
+    }, root)
+
+    local intro = APHX_Label(holder,
+        "Choose a motion slot, then tap a bundle below to borrow only that motion. Mix as many bundles as you want.",
+        UDim2.new(1, -10, 0, 36), Theme.Muted)
+    intro.Position = UDim2.fromOffset(4, 0)
+    intro.TextSize = 9
+
+    local slotScroll = APHX_New("ScrollingFrame", {
+        Name = "SlotScroll",
+        Size = UDim2.new(1, -8, 0, 70),
+        Position = UDim2.fromOffset(4, 38),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.X,
+        ScrollingDirection = Enum.ScrollingDirection.X,
+        ScrollBarThickness = 0,
+        ZIndex = 704,
+    }, holder)
+    APHELION_FEATURES.UI.SlotScroll = slotScroll
+    APHX_New("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 6),
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+    }, slotScroll)
+
+    for _, slot in ipairs(APHX_SLOT_ORDER) do
+        local button = APHX_Button(slotScroll,
+            APHX_SlotLabel(slot) .. "\n" .. APHX_MixSlotValueText(slot),
+            100, 58)
+        button.Name = "Slot_" .. slot
+        button.TextSize = 8
+        button.TextWrapped = true
+        button.BackgroundColor3 = APHELION_FEATURES.Mix.SelectedSlot == slot
+            and Color3.fromRGB(33, 56, 84)
+            or Theme.Surface2
+        button.TextColor3 = APHELION_FEATURES.Mix.SelectedSlot == slot
+            and Theme.Accent
+            or Theme.Text
+        button.Activated:Connect(function()
+            APHELION_FEATURES.Mix.SelectedSlot = slot
+            APHELION_FEATURES.Mix.Revision += 1
+            APHX_RenderMixSlots()
+            APHX_RenderMixSources()
+        end)
+    end
+
+    local selected = APHELION_FEATURES.Mix.SelectedSlot
+    local selectedTitle = APHX_Label(holder,
+        APHX_SlotLabel(selected) .. "  •  " .. (APHX_SLOT_DEFS[selected] and APHX_SLOT_DEFS[selected].Description or ""),
+        UDim2.new(1, -118, 0, 25), Theme.Text, Enum.Font.GothamBold)
+    selectedTitle.Position = UDim2.fromOffset(4, 112)
+    selectedTitle.TextSize = 11
+
+    local clearSlot = APHX_Button(holder, "CLEAR", 84, 30)
+    clearSlot.Position = UDim2.new(1, -88, 0, 108)
+    clearSlot.BackgroundColor3 = Color3.fromRGB(38, 24, 31)
+    clearSlot.TextColor3 = Theme.Danger
+    clearSlot.Activated:Connect(function()
+        if APHX_ClearMixSlot(selected) then
+            APHX_RenderMixSlots()
+            APHX_RenderMixSources()
+        end
+    end)
+
+    local actions = APHX_New("Frame", {
+        Size = UDim2.new(1, -8, 0, 44),
+        Position = UDim2.new(0, 4, 1, -44),
+        BackgroundTransparency = 1,
+        ZIndex = 704,
+    }, holder)
+    local actionLayout = APHX_New("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 6),
+        HorizontalAlignment = Enum.HorizontalAlignment.Right,
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+    }, actions)
+
+    local undo = APHX_Button(actions, "UNDO", 66, 40)
+    local reset = APHX_Button(actions, "RESET", 66, 40)
+    local fill = APHX_Button(actions, "FILL MISSING", 94, 40)
+    local save = APHX_Button(actions, "SAVE MIX", 86, 40)
+    local apply = APHX_Button(actions, "APPLY", 70, 40)
+
+    undo.Activated:Connect(function()
+        if APHX_UndoMix() then
+            APHX_RenderMixSlots()
+            APHX_RenderMixSources()
+            APHX_Notify("Undo applied", 2)
+        end
+    end)
+    reset.Activated:Connect(function()
+        APHX_ResetMix()
+        APHX_RenderMixSlots()
+        APHX_RenderMixSources()
+        APHX_Notify("Mix reset", 2)
+    end)
+    fill.Activated:Connect(function()
+        local candidates = APHX_GetBundleCandidates(APHELION_FEATURES.Mix.Query)
+        local first = candidates[1]
+        if not first then
+            APHX_Notify("No bundle source available yet", 3)
+            return
+        end
+        local changed = APHX_FillMissingFromItem(first)
+        APHX_RenderMixSlots()
+        APHX_RenderMixSources()
+        APHX_Notify("Filled " .. tostring(changed) .. " missing slot(s)", 3)
+    end)
+    save.Activated:Connect(function()
+        local prompt = APHX_CreatePrompt(holder, "SAVE MIX", "Style name", "My Mix")
+        prompt.Confirm.Activated:Connect(function()
+            local value = APHX_Trim(prompt.Input.Text)
+            if value == "" then
+                return
+            end
+            local ok, name = APHX_SaveCurrentMixAs(value)
+            if ok then
+                prompt.Close()
+                APHX_Notify("Saved + applied " .. name, 3)
+                APHX_RenderVault()
+            else
+                APHX_Notify(name or "Save failed", 3)
+            end
+        end)
+        prompt.Input:CaptureFocus()
+    end)
+    apply.Activated:Connect(function()
+        local mix = APHELION_FEATURES.Mix.Slots
+        if not APHX_MixHasContent(mix) then
+            APHX_Notify("Fill at least one slot first", 3)
+            return
+        end
+
+        -- Preview through the original applyAnimation backend without writing a
+        -- temporary style into CustomAnimations.json.
+        local tempName = "__APHX_PREVIEW_" .. tostring(math.random(100000, 999999))
+        APHX_EnsureCustomAnimationState()
+        local hadExisting = State.CustomAnimations.Sets[tempName] ~= nil
+        local previous = State.CustomAnimations.Sets[tempName]
+        State.CustomAnimations.Sets[tempName] = APHX_DeepCopy(mix)
+        local pseudo = {
+            id = -math.random(100000, 999999),
+            name = tempName,
+            customSetName = tempName,
+            isCustomSet = true,
+            bundledItems = {"Custom-Animation"},
+        }
+        local ok, err = APHX_SafeCall(function()
+            applyAnimation(pseudo)
+        end)
+        if hadExisting then
+            State.CustomAnimations.Sets[tempName] = previous
+        else
+            State.CustomAnimations.Sets[tempName] = nil
+        end
+        if ok then
+            APHX_Notify("Applied current Mix Studio build", 3)
+        else
+            APHX_Notify(APHX_String(err or "Could not apply mix"), 3)
+        end
+    end)
+end
+
+function APHX_RenderMixSources()
+    local root = APHELION_FEATURES.UI.MixContent
+    if not root or not root.Parent then
+        return
+    end
+
+    for _, child in ipairs(root:GetChildren()) do
+        if child.Name == "SourceDynamic" then
+            child:Destroy()
+        end
+    end
+
+    local holder = APHX_New("Frame", {
+        Name = "SourceDynamic",
+        -- Leave the bottom action row owned by MixDynamic; this prevents the
+        -- source list from sitting on top of SAVE / APPLY on small screens.
+        Size = UDim2.new(1, 0, 1, -214),
+        Position = UDim2.fromOffset(0, 150),
+        BackgroundTransparency = 1,
+        ZIndex = 704,
+    }, root)
+
+    local search = APHX_New("TextBox", {
+        Size = UDim2.new(1, -8, 0, 36),
+        Position = UDim2.fromOffset(4, 0),
+        BackgroundColor3 = Theme.Surface,
+        TextColor3 = Theme.Text,
+        PlaceholderColor3 = Theme.Muted,
+        PlaceholderText = "Find a bundle for " .. APHX_SlotLabel(APHELION_FEATURES.Mix.SelectedSlot) .. "...",
+        Text = APHELION_FEATURES.Mix.Query,
+        ClearTextOnFocus = false,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 705,
+    }, holder)
+    APHX_Round(search, 10)
+    APHX_Stroke(search, Theme.Border, 0.25, 1)
+    APHX_New("UIPadding", {PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12)}, search)
+    APHELION_FEATURES.UI.SourceSearch = search
+
+    local sourceScroll = APHX_New("ScrollingFrame", {
+        Size = UDim2.new(1, -8, 1, -44),
+        Position = UDim2.fromOffset(4, 42),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ScrollBarThickness = 4,
+        ScrollBarImageColor3 = Theme.Accent,
+        ZIndex = 705,
+    }, holder)
+    APHELION_FEATURES.UI.SourceScroll = sourceScroll
+    APHX_New("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+    }, sourceScroll)
+
+    local function renderSources()
+        for _, child in ipairs(sourceScroll:GetChildren()) do
+            if not child:IsA("UIListLayout") then
+                child:Destroy()
+            end
+        end
+
+        local slot = APHELION_FEATURES.Mix.SelectedSlot
+        local candidates = APHX_GetBundleCandidates(search.Text)
+        local shown = 0
+        local maxShown = 36
+
+        for _, item in ipairs(candidates) do
+            if shown >= maxShown then
+                break
+            end
+            shown += 1
+
+            local card = APHX_New("TextButton", {
+                AutoButtonColor = false,
+                Size = UDim2.new(1, -6, 0, 68),
+                BackgroundColor3 = Theme.Card,
+                Text = "",
+                LayoutOrder = shown,
+                ZIndex = 706,
+            }, sourceScroll)
+            APHX_Round(card, 12)
+            APHX_Stroke(card, Theme.Border, 0.34, 1)
+
+            local thumb = APHX_New("ImageLabel", {
+                Size = UDim2.fromOffset(54, 54),
+                Position = UDim2.fromOffset(7, 7),
+                BackgroundColor3 = Theme.Background,
+                BackgroundTransparency = 0.1,
+                BorderSizePixel = 0,
+                Image = getItemThumbnail("animation", item, 150),
+                ScaleType = Enum.ScaleType.Crop,
+                ZIndex = 707,
+            }, card)
+            APHX_Round(thumb, 10)
+
+            local name = APHX_Label(card, APHX_String(item.name or item.id), UDim2.new(1, -170, 0, 26), Theme.Text, Enum.Font.GothamBold)
+            name.Position = UDim2.fromOffset(70, 7)
+            name.TextSize = 10
+            name.TextTruncate = Enum.TextTruncate.AtEnd
+            name.ZIndex = 707
+
+            local meta = APHX_Label(card, (item.isCustomSet and "CUSTOM STYLE" or "BUNDLE") .. "  •  " .. APHX_String(item.id), UDim2.new(1, -170, 0, 18), Theme.Muted)
+            meta.Position = UDim2.fromOffset(70, 32)
+            meta.TextSize = 8
+            meta.ZIndex = 707
+
+            local use = APHX_Button(card, "USE", 64, 34)
+            use.Position = UDim2.new(1, -72, 0.5, -17)
+            use.ZIndex = 708
+            use.TextSize = 9
+            use.BackgroundColor3 = Color3.fromRGB(26, 48, 72)
+            use.TextColor3 = Theme.Accent
+
+            card.Activated:Connect(function()
+                if APHELION_FEATURES.Mix.Busy then
+                    return
+                end
+                APHELION_FEATURES.Mix.Busy = true
+                APHX_Notify("Resolving " .. APHX_String(item.name or item.id) .. "...", 2)
+                task.spawn(function()
+                    local ok, result = APHX_SafeCall(function()
+                        return APHX_CopySourceIntoSlot(item, slot)
+                    end)
+                    APHELION_FEATURES.Mix.Busy = false
+                    if ok and result then
+                        APHX_Notify(result, 2)
+                    else
+                        APHX_Notify("No " .. APHX_SlotLabel(slot) .. " animation found in that bundle", 3)
+                    end
+                    if APHELION_FEATURES.Open then
+                        APHX_RenderMixSlots()
+                        APHX_RenderMixSources()
+                    end
+                end)
+            end)
+        end
+
+        if shown == 0 then
+            local empty = APHX_Label(sourceScroll,
+                "No bundle sources match. Let the catalog finish loading, or try another search.",
+                UDim2.new(1, -8, 0, 80), Theme.Muted)
+            empty.LayoutOrder = 1
+            empty.TextXAlignment = Enum.TextXAlignment.Center
+            empty.ZIndex = 706
+        end
+    end
+
+    APHELION_FEATURES.Mix.Query = search.Text
+    search:GetPropertyChangedSignal("Text"):Connect(function()
+        APHELION_FEATURES.Mix.Query = search.Text
+        APHELION_FEATURES.Mix.SourceRevision += 1
+        renderSources()
+    end)
+
+    renderSources()
+end
+
+function APHX_RenderVault()
+    local root = APHELION_FEATURES.UI.VaultContent
+    if not root or not root.Parent then
+        return
+    end
+
+    for _, child in ipairs(root:GetChildren()) do
+        child:Destroy()
+    end
+
+    local header = APHX_Label(root,
+        "STYLE VAULT  •  your saved custom bundles", UDim2.new(1, -8, 0, 26), Theme.Text, Enum.Font.GothamBold)
+    header.Position = UDim2.fromOffset(4, 0)
+    header.TextSize = 13
+
+    local sub = APHX_Label(root,
+        "Saved styles use the same backend custom-animation format, so they remain compatible with the existing editor.",
+        UDim2.new(1, -8, 0, 34), Theme.Muted)
+    sub.Position = UDim2.fromOffset(4, 28)
+    sub.TextSize = 9
+
+    local actionBar = APHX_New("Frame", {
+        Size = UDim2.new(1, -8, 0, 42),
+        Position = UDim2.fromOffset(4, 68),
+        BackgroundTransparency = 1,
+    }, root)
+    local layout = APHX_New("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 6),
+        HorizontalAlignment = Enum.HorizontalAlignment.Left,
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+    }, actionBar)
+
+    local edit = APHX_Button(actionBar, "EDIT MIX", 86, 38)
+    local newMix = APHX_Button(actionBar, "NEW MIX", 86, 38)
+    local exportAll = APHX_Button(actionBar, "EXPORT", 78, 38)
+    local import = APHX_Button(actionBar, "IMPORT", 78, 38)
+
+    edit.Activated:Connect(function()
+        local name = APHELION_FEATURES.Vault.SelectedStyle
+        if not name then
+            APHX_Notify("Select a style first", 2)
+            return
+        end
+        local ok, message = APHX_SelectMixFromExistingSet(name)
+        if ok then
+            APHX_OpenTools("Mix")
+            APHX_Notify("Loaded " .. name .. " into Mix Studio", 3)
+        else
+            APHX_Notify(message, 3)
+        end
+    end)
+
+    newMix.Activated:Connect(function()
+        APHX_ResetMix()
+        APHX_OpenTools("Mix")
+    end)
+
+    exportAll.Activated:Connect(function()
+        APHX_EnsureCustomAnimationState()
+        local payload = {
+            Type = "AphelionMixVault",
+            Version = APHELION_FEATURES.Version,
+            Styles = {},
+        }
+        for _, name in ipairs(State.CustomAnimations.Order or {}) do
+            if name ~= "Default" and State.CustomAnimations.Sets[name] then
+                payload.Styles[name] = State.CustomAnimations.Sets[name]
+            end
+        end
+        local ok, json = APHX_SafeCall(function()
+            return HttpService:JSONEncode(payload)
+        end)
+        if ok then
+            if setclipboard then
+                local copied = pcall(setclipboard, json)
+                if copied then
+                    APHX_Notify("Vault JSON copied to clipboard", 3)
+                else
+                    APHX_Notify("Export created, but clipboard is unavailable", 3)
+                end
+            else
+                APHX_Notify("Clipboard is unavailable in this environment", 3)
+            end
+        end
+    end)
+
+    import.Activated:Connect(function()
+        local prompt = APHX_CreatePrompt(root, "IMPORT STYLE", "Paste style JSON", "")
+        prompt.Input.MultiLine = true
+        prompt.Input.TextYAlignment = Enum.TextYAlignment.Top
+        prompt.Input.Size = UDim2.new(1, -30, 0, 62)
+        prompt.Input.Position = UDim2.fromOffset(15, 48)
+        prompt.Confirm.Position = UDim2.new(1, -100, 1, -50)
+        prompt.Confirm.Activated:Connect(function()
+            local text = prompt.Input.Text
+            if APHX_Trim(text) == "" then
+                return
+            end
+            local ok, result = APHX_ImportStyle(text)
+            if ok then
+                prompt.Close()
+                APHX_Notify("Imported " .. result, 3)
+                APHX_RenderVault()
+            else
+                APHX_Notify(result or "Import failed", 3)
+            end
+        end)
+        prompt.Input:CaptureFocus()
+    end)
+
+    local scroll = APHX_New("ScrollingFrame", {
+        Name = "StyleScroll",
+        Size = UDim2.new(1, -8, 1, -118),
+        Position = UDim2.fromOffset(4, 112),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ScrollBarThickness = 4,
+        ScrollBarImageColor3 = Theme.Accent,
+    }, root)
+    APHELION_FEATURES.UI.StyleScroll = scroll
+    APHX_New("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+    }, scroll)
+
+    APHX_EnsureCustomAnimationState()
+    local names = {}
+    for _, name in ipairs(State.CustomAnimations.Order or {}) do
+        if name ~= "Default" and State.CustomAnimations.Sets[name] then
+            table.insert(names, name)
+        end
+    end
+    APHX_StableSort(names, APHX_SortText)
+
+    if #names == 0 then
+        local empty = APHX_Label(scroll,
+            "No saved styles yet. Open Mix Studio, build your combo, and press SAVE MIX.",
+            UDim2.new(1, -8, 0, 90), Theme.Muted)
+        empty.TextXAlignment = Enum.TextXAlignment.Center
+    else
+        for index, name in ipairs(names) do
+            local set = State.CustomAnimations.Sets[name]
+            local row = APHX_New("TextButton", {
+                AutoButtonColor = false,
+                Size = UDim2.new(1, -6, 0, 78),
+                BackgroundColor3 = APHELION_FEATURES.Vault.SelectedStyle == name
+                    and Color3.fromRGB(28, 48, 71)
+                    or Theme.Card,
+                Text = "",
+                LayoutOrder = index,
+            }, scroll)
+            APHX_Round(row, 12)
+            APHX_Stroke(row, Theme.Border, 0.3, 1)
+
+            local title = APHX_Label(row, name, UDim2.new(1, -190, 0, 25), Theme.Text, Enum.Font.GothamBold)
+            title.Position = UDim2.fromOffset(12, 8)
+            title.TextSize = 11
+            title.TextTruncate = Enum.TextTruncate.AtEnd
+
+            local sourceCount = APHX_TableLength(set and set.__meta and set.__meta.MixMeta and set.__meta.MixMeta.Slots or {})
+            local filled = APHX_MixFilledSlots(set)
+            local meta = APHX_Label(row,
+                tostring(filled) .. "/" .. tostring(#APHX_SLOT_ORDER) .. " slots  •  " .. tostring(sourceCount) .. " recorded sources",
+                UDim2.new(1, -190, 0, 18), Theme.Muted)
+            meta.Position = UDim2.fromOffset(12, 35)
+            meta.TextSize = 8
+
+            local apply = APHX_Button(row, "APPLY", 62, 30)
+            apply.Position = UDim2.new(1, -138, 0.5, -15)
+            apply.TextColor3 = Theme.Good
+            apply.BackgroundColor3 = Color3.fromRGB(24, 48, 39)
+            apply.Activated:Connect(function()
+                local ok, message = APHX_ApplyStyle(name)
+                APHX_Notify(ok and message or (message or "Apply failed"), 3)
+                APHELION_FEATURES.Vault.SelectedStyle = name
+                APHX_RenderVault()
+            end)
+
+            local editButton = APHX_Button(row, "EDIT", 54, 30)
+            editButton.Position = UDim2.new(1, -75, 0.5, -15)
+            editButton.Activated:Connect(function()
+                APHELION_FEATURES.Vault.SelectedStyle = name
+                local ok, message = APHX_SelectMixFromExistingSet(name)
+                if ok then
+                    APHX_OpenTools("Mix")
+                else
+                    APHX_Notify(message, 2)
+                end
+            end)
+
+            local deleteButton = APHX_Button(row, "×", 34, 30)
+            deleteButton.Position = UDim2.new(1, -38, 0.5, -15)
+            deleteButton.BackgroundColor3 = Color3.fromRGB(40, 24, 31)
+            deleteButton.TextColor3 = Theme.Danger
+            deleteButton.Activated:Connect(function()
+                local ok, message = APHX_DeleteStyle(name)
+                APHX_Notify(ok and message or (message or "Delete failed"), 2)
+                APHX_RenderVault()
+            end)
+
+            row.Activated:Connect(function()
+                APHELION_FEATURES.Vault.SelectedStyle = name
+                APHX_RenderVault()
+            end)
+        end
+    end
+end
+
+function APHX_RenderLab()
+    local root = APHELION_FEATURES.UI.LabContent
+    if not root or not root.Parent then
+        return
+    end
+    for _, child in ipairs(root:GetChildren()) do
+        child:Destroy()
+    end
+
+    local title = APHX_Label(root, "MOTION LAB", UDim2.new(1, -8, 0, 26), Theme.Text, Enum.Font.GothamBold)
+    title.Position = UDim2.fromOffset(4, 0)
+    title.TextSize = 13
+
+    local desc = APHX_Label(root,
+        "Build a simple animation/emote queue. Great for testing a bundle mix or making a mini showcase loop.",
+        UDim2.new(1, -8, 0, 36), Theme.Muted)
+    desc.Position = UDim2.fromOffset(4, 28)
+    desc.TextSize = 9
+
+    local controls = APHX_New("Frame", {
+        Size = UDim2.new(1, -8, 0, 92),
+        Position = UDim2.fromOffset(4, 68),
+        BackgroundTransparency = 1,
+    }, root)
+
+    local addRandom = APHX_Button(controls, "+ RANDOM", 92, 36)
+    addRandom.Position = UDim2.fromOffset(0, 0)
+    addRandom.Activated:Connect(function()
+        local count = APHX_QueueAddRandom(1)
+        APHX_Notify(count > 0 and "Added random item" or "Nothing available yet", 2)
+        APHX_RenderLab()
+    end)
+
+    local addFive = APHX_Button(controls, "+ 5", 64, 36)
+    addFive.Position = UDim2.fromOffset(98, 0)
+    addFive.Activated:Connect(function()
+        local count = APHX_QueueAddRandom(5)
+        APHX_Notify("Added " .. tostring(count) .. " item(s)", 2)
+        APHX_RenderLab()
+    end)
+
+    local addFav = APHX_Button(controls, "+ FAVORITES", 102, 36)
+    addFav.Position = UDim2.fromOffset(168, 0)
+    addFav.Activated:Connect(function()
+        local count = APHX_QueueAddFavorites()
+        APHX_Notify("Added " .. tostring(count) .. " favorite item(s)", 2)
+        APHX_RenderLab()
+    end)
+
+    local clear = APHX_Button(controls, "CLEAR", 70, 36)
+    clear.Position = UDim2.new(1, -70, 0, 0)
+    clear.BackgroundColor3 = Color3.fromRGB(38, 24, 31)
+    clear.TextColor3 = Theme.Danger
+    clear.Activated:Connect(function()
+        APHX_QueueStop()
+        APHX_QueueClear()
+        APHX_RenderLab()
+    end)
+
+    local intervalLabel = APHX_Label(controls, "INTERVAL", UDim2.fromOffset(70, 20), Theme.Muted, Enum.Font.GothamBold)
+    intervalLabel.Position = UDim2.fromOffset(0, 48)
+    intervalLabel.TextSize = 8
+
+    local interval = APHX_New("TextBox", {
+        Size = UDim2.fromOffset(76, 34),
+        Position = UDim2.fromOffset(76, 42),
+        BackgroundColor3 = Theme.Surface,
+        TextColor3 = Theme.Text,
+        PlaceholderColor3 = Theme.Muted,
+        PlaceholderText = "2.5",
+        Text = tostring(APHELION_FEATURES.Queue.Interval),
+        ClearTextOnFocus = false,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+    }, controls)
+    APHX_Round(interval, 9)
+    APHX_Stroke(interval, Theme.Border, 0.25, 1)
+    interval:GetPropertyChangedSignal("Text"):Connect(function()
+        local value = tonumber(interval.Text)
+        if value then
+            APHELION_FEATURES.Queue.Interval = math.clamp(value, 0.6, 30)
+        end
+    end)
+
+    local loop = APHX_Button(controls, APHELION_FEATURES.Queue.Loop and "LOOP: ON" or "LOOP: OFF", 90, 34)
+    loop.Position = UDim2.fromOffset(162, 42)
+    loop.Activated:Connect(function()
+        APHELION_FEATURES.Queue.Loop = not APHELION_FEATURES.Queue.Loop
+        APHX_RenderLab()
+    end)
+
+    local shuffle = APHX_Button(controls, APHELION_FEATURES.Queue.Shuffle and "SHUFFLE: ON" or "SHUFFLE: OFF", 100, 34)
+    shuffle.Position = UDim2.fromOffset(258, 42)
+    shuffle.Activated:Connect(function()
+        APHELION_FEATURES.Queue.Shuffle = not APHELION_FEATURES.Queue.Shuffle
+        APHX_RenderLab()
+    end)
+
+    local play = APHX_Button(controls, APHELION_FEATURES.Queue.Playing and "PLAYING" or "PLAY QUEUE", 100, 34)
+    play.Position = UDim2.new(1, -206, 0, 42)
+    play.BackgroundColor3 = APHELION_FEATURES.Queue.Playing and Color3.fromRGB(26, 48, 39) or Theme.Surface2
+    play.TextColor3 = APHELION_FEATURES.Queue.Playing and Theme.Good or Theme.Text
+    play.Activated:Connect(function()
+        if APHELION_FEATURES.Queue.Playing then
+            APHX_QueueStop()
+        else
+            local ok, message = APHX_QueuePlay()
+            APHX_Notify(message, 2)
+        end
+        APHX_RenderLab()
+    end)
+
+    local stop = APHX_Button(controls, "STOP", 72, 34)
+    stop.Position = UDim2.new(1, -100, 0, 42)
+    stop.BackgroundColor3 = Color3.fromRGB(38, 24, 31)
+    stop.TextColor3 = Theme.Danger
+    stop.Activated:Connect(function()
+        APHX_QueueStop()
+        APHX_RenderLab()
+    end)
+
+    local scroll = APHX_New("ScrollingFrame", {
+        Name = "LabScroll",
+        Size = UDim2.new(1, -8, 1, -166),
+        Position = UDim2.fromOffset(4, 162),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ScrollBarThickness = 4,
+        ScrollBarImageColor3 = Theme.Accent,
+    }, root)
+    APHELION_FEATURES.UI.LabScroll = scroll
+    APHX_New("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+    }, scroll)
+
+    local status = APHX_Label(scroll,
+        APHELION_FEATURES.Queue.Playing
+            and ("PLAYING ITEM " .. tostring(APHELION_FEATURES.Queue.CurrentIndex) .. " / " .. tostring(#APHELION_FEATURES.Queue.Items))
+            or ("QUEUE READY  •  " .. tostring(#APHELION_FEATURES.Queue.Items) .. " ITEM(S)"),
+        UDim2.new(1, -8, 0, 30),
+        APHELION_FEATURES.Queue.Playing and Theme.Good or Theme.Muted,
+        Enum.Font.GothamBold)
+    status.TextSize = 9
+
+    if #APHELION_FEATURES.Queue.Items == 0 then
+        local empty = APHX_Label(scroll,
+            "Nothing queued. Add random items or favorites above.",
+            UDim2.new(1, -8, 0, 80), Theme.Muted)
+        empty.TextXAlignment = Enum.TextXAlignment.Center
+    else
+        for index, entry in ipairs(APHELION_FEATURES.Queue.Items) do
+            local row = APHX_New("Frame", {
+                Size = UDim2.new(1, -6, 0, 58),
+                BackgroundColor3 = Theme.Card,
+                BorderSizePixel = 0,
+                LayoutOrder = index,
+            }, scroll)
+            APHX_Round(row, 11)
+            APHX_Stroke(row, Theme.Border, 0.35, 1)
+
+            local marker = APHX_Label(row,
+                (index == APHELION_FEATURES.Queue.CurrentIndex and APHELION_FEATURES.Queue.Playing) and "▶" or tostring(index),
+                UDim2.fromOffset(30, 58),
+                (index == APHELION_FEATURES.Queue.CurrentIndex and APHELION_FEATURES.Queue.Playing) and Theme.Good or Theme.Muted,
+                Enum.Font.GothamBold)
+            marker.Position = UDim2.fromOffset(4, 0)
+            marker.TextXAlignment = Enum.TextXAlignment.Center
+            marker.TextSize = 10
+
+            local label = APHX_Label(row,
+                entry.name .. "  •  " .. string.upper(entry.kind),
+                UDim2.new(1, -90, 1, 0), Theme.Text, Enum.Font.GothamMedium)
+            label.Position = UDim2.fromOffset(42, 0)
+            label.TextSize = 9
+            label.TextTruncate = Enum.TextTruncate.AtEnd
+
+            local remove = APHX_Button(row, "×", 32, 32)
+            remove.Position = UDim2.new(1, -38, 0.5, -16)
+            remove.BackgroundColor3 = Color3.fromRGB(38, 24, 31)
+            remove.TextColor3 = Theme.Danger
+            remove.Activated:Connect(function()
+                if index == APHELION_FEATURES.Queue.CurrentIndex and APHELION_FEATURES.Queue.Playing then
+                    APHX_QueueStop()
+                end
+                APHX_QueueRemove(index)
+                APHX_RenderLab()
+            end)
+        end
+    end
+end
+
+local function APHX_WireToolButton()
+    if not Utility or not Utility.Parent then
+        return
+    end
+
+    Utility.Size = UDim2.fromOffset(184, 30)
+    Status.Size = UDim2.new(1, -196, 1, 0)
+    RandomBtn.Size = UDim2.fromOffset(56, 30)
+    StopBtn.Size = UDim2.fromOffset(56, 30)
+    RandomBtn.TextSize = 8
+    StopBtn.TextSize = 8
+
+    local toolsButton = Utility:FindFirstChild("AphelionToolsButton")
+    if toolsButton then
+        return toolsButton
+    end
+
+    toolsButton = APHX_New("TextButton", {
+        Name = "AphelionToolsButton",
+        AutoButtonColor = false,
+        Size = UDim2.fromOffset(56, 30),
+        BackgroundColor3 = Color3.fromRGB(30, 45, 68),
+        Text = "TOOLS",
+        TextColor3 = Theme.Accent,
+        Font = Enum.Font.GothamBold,
+        TextSize = 8,
+        LayoutOrder = 2,
+    }, Utility)
+    APHX_Round(toolsButton, 9)
+    APHX_Stroke(toolsButton, Theme.Accent, 0.62, 1)
+    toolsButton.Activated:Connect(function()
+        APHX_OpenTools("Mix")
+    end)
+
+    RandomBtn.LayoutOrder = 1
+    StopBtn.LayoutOrder = 3
+    return toolsButton
+end
+
+APHX_WireToolButton()
+
+-- Refresh tools when the backend catalog or custom-set data changes.
+task.spawn(function()
+    local lastAnimations = -1
+    local lastCustomCount = -1
+    while Screen.Parent do
+        task.wait(2.5)
+        local animationCount = APHX_TableLength(State.originalAnimationsData or State.animationsData)
+        local customCount = 0
+        if State.CustomAnimations and State.CustomAnimations.Order then
+            customCount = #State.CustomAnimations.Order
+        end
+        if animationCount ~= lastAnimations or customCount ~= lastCustomCount then
+            lastAnimations = animationCount
+            lastCustomCount = customCount
+            APHELION_FEATURES.Mix.Resolved = {}
+            if APHELION_FEATURES.Open then
+                if APHELION_FEATURES.ActiveTab == "Mix" then
+                    pcall(APHX_RenderMixSources)
+                    pcall(APHX_RenderMixSlots)
+                elseif APHELION_FEATURES.ActiveTab == "Vault" then
+                    pcall(APHX_RenderVault)
+                else
+                    pcall(APHX_RenderLab)
+                end
+            end
+        end
+    end
+end)
+
+-- Close feature tools whenever the main UI itself is closed.
+CloseBtn.Activated:Connect(function()
+    APHELION_FEATURES.Open = false
+    APHX_QueueStop()
+end)
+
+-- Ensure a deterministic initial mix state even if older cache files use a
+-- legacy custom-animation schema.
+APHX_EnsureCustomAnimationState()
+APHELION_FEATURES.Mix.Slots = APHX_NewEmptyMix()
+
+getgenv().Aphelion = getgenv().Aphelion or {}
+getgenv().Aphelion.Features = getgenv().Aphelion.Features or {}
+getgenv().Aphelion.Features.Version = APHELION_FEATURES.Version
+getgenv().Aphelion.Features.MixStudio = true
+getgenv().Aphelion.Features.StyleVault = true
+getgenv().Aphelion.Features.MotionLab = true
+getgenv().Aphelion.Features.Open = APHX_OpenTools
+getgenv().Aphelion.Features.ApplyMix = function()
+    return APHX_ApplyStyle(State.currentCustomAnimationName)
+end
+getgenv().Aphelion.Features.Queue = APHELION_FEATURES.Queue
+
+APHX_Notify("MIX / VAULT / MOTION tools installed", 4)
+
+--[[=========================================================================
+    FEATURE PACK REFERENCE NOTES
+
+    The following notes intentionally live in comments because this file is
+    also used as a single-file handoff between Roblox Studio and test builds.
+    They document the feature contract and the data model without executing
+    anything.  Keeping the reference in the file makes future edits safer:
+    slot names, source metadata, queue behavior, import formats, mobile UI
+    expectations, and compatibility rules are all written down together.
+=============================================================================]]
+-- FEATURE AUDIT 001: MIX STUDIO: Idle can contain two source animations; other slots use their primary animation.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 002: MIX STUDIO: A slot assignment records the source bundle key and source display name.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 003: MIX STUDIO: Clearing a slot never deletes a catalog bundle or custom style.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 004: MIX STUDIO: Undo snapshots are bounded by MaxSnapshots to avoid unbounded memory use.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 005: MIX STUDIO: Bundle resolution is lazy and cached through APHELION_FEATURES.Mix.Resolved.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 006: MIX STUDIO: Existing State.AnimationCache remains authoritative when available.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 007: MIX STUDIO: Custom sets are represented using the existing State.CustomAnimations structure.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 008: MIX STUDIO: Save Mix updates the legacy custom-animation dropdown when present.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 009: MIX STUDIO: Apply uses the existing applyAnimation backend rather than replacing it.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 010: STYLE VAULT: Default is protected and cannot be removed through the new UI.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 011: STYLE VAULT: Imported styles receive unique names when a collision exists.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 012: STYLE VAULT: Export uses a small JSON envelope with a stable Type field.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 013: STYLE VAULT: Imported data is stored as a custom animation set and stays editable.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 014: STYLE VAULT: Editing a saved style restores Mix Studio source metadata when available.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 015: MOTION LAB: Queue length is capped to 32 entries for mobile friendliness.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 016: MOTION LAB: Queue playback uses a token so stale playback loops stop cleanly.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 017: MOTION LAB: Loop mode repeats the queue; shuffle creates a temporary random order.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 018: MOTION LAB: Interval is clamped to a reasonable range to avoid runaway task spawning.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 019: MOTION LAB: Clearing the queue also stops active queue playback.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 020: MOBILE: Visible bundle source cards are capped so the feature panel stays light.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 021: MOBILE: Thumbnails are requested at a small size in source rows and use existing helper logic.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 022: MOBILE: All feature controls use Activated instead of mouse-only callbacks.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 023: MOBILE: Horizontal slot chips use a ScrollingFrame for narrow phones.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 024: MOBILE: Feature panel uses scale-based sizing so it adapts from phones to desktop.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 025: MOBILE: Catalog rendering remains page-based; the feature pack does not eagerly render the full catalog.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 026: COMPATIBILITY: Existing backend globals and functions are intentionally reused, not renamed.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 027: COMPATIBILITY: The feature pack checks for missing backend functions through safe calls.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 028: COMPATIBILITY: The feature pack does not disable legacy settings tabs or animation editors.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 029: COMPATIBILITY: The original UI remains the default screen; Tools is an optional overlay.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 030: COMPATIBILITY: Existing Close behavior is preserved and queue playback is stopped on close.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 031: MIX STUDIO: Idle can contain two source animations; other slots use their primary animation.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 032: MIX STUDIO: A slot assignment records the source bundle key and source display name.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 033: MIX STUDIO: Clearing a slot never deletes a catalog bundle or custom style.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 034: MIX STUDIO: Undo snapshots are bounded by MaxSnapshots to avoid unbounded memory use.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 035: MIX STUDIO: Bundle resolution is lazy and cached through APHELION_FEATURES.Mix.Resolved.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 036: MIX STUDIO: Existing State.AnimationCache remains authoritative when available.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 037: MIX STUDIO: Custom sets are represented using the existing State.CustomAnimations structure.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 038: MIX STUDIO: Save Mix updates the legacy custom-animation dropdown when present.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 039: MIX STUDIO: Apply uses the existing applyAnimation backend rather than replacing it.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 040: STYLE VAULT: Default is protected and cannot be removed through the new UI.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 041: STYLE VAULT: Imported styles receive unique names when a collision exists.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 042: STYLE VAULT: Export uses a small JSON envelope with a stable Type field.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 043: STYLE VAULT: Imported data is stored as a custom animation set and stays editable.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 044: STYLE VAULT: Editing a saved style restores Mix Studio source metadata when available.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 045: MOTION LAB: Queue length is capped to 32 entries for mobile friendliness.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 046: MOTION LAB: Queue playback uses a token so stale playback loops stop cleanly.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 047: MOTION LAB: Loop mode repeats the queue; shuffle creates a temporary random order.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 048: MOTION LAB: Interval is clamped to a reasonable range to avoid runaway task spawning.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 049: MOTION LAB: Clearing the queue also stops active queue playback.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 050: MOBILE: Visible bundle source cards are capped so the feature panel stays light.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 051: MOBILE: Thumbnails are requested at a small size in source rows and use existing helper logic.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 052: MOBILE: All feature controls use Activated instead of mouse-only callbacks.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 053: MOBILE: Horizontal slot chips use a ScrollingFrame for narrow phones.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 054: MOBILE: Feature panel uses scale-based sizing so it adapts from phones to desktop.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 055: MOBILE: Catalog rendering remains page-based; the feature pack does not eagerly render the full catalog.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 056: COMPATIBILITY: Existing backend globals and functions are intentionally reused, not renamed.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 057: COMPATIBILITY: The feature pack checks for missing backend functions through safe calls.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 058: COMPATIBILITY: The feature pack does not disable legacy settings tabs or animation editors.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 059: COMPATIBILITY: The original UI remains the default screen; Tools is an optional overlay.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 060: COMPATIBILITY: Existing Close behavior is preserved and queue playback is stopped on close.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 061: MIX STUDIO: Idle can contain two source animations; other slots use their primary animation.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 062: MIX STUDIO: A slot assignment records the source bundle key and source display name.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 063: MIX STUDIO: Clearing a slot never deletes a catalog bundle or custom style.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 064: MIX STUDIO: Undo snapshots are bounded by MaxSnapshots to avoid unbounded memory use.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 065: MIX STUDIO: Bundle resolution is lazy and cached through APHELION_FEATURES.Mix.Resolved.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 066: MIX STUDIO: Existing State.AnimationCache remains authoritative when available.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 067: MIX STUDIO: Custom sets are represented using the existing State.CustomAnimations structure.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 068: MIX STUDIO: Save Mix updates the legacy custom-animation dropdown when present.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 069: MIX STUDIO: Apply uses the existing applyAnimation backend rather than replacing it.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 070: STYLE VAULT: Default is protected and cannot be removed through the new UI.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 071: STYLE VAULT: Imported styles receive unique names when a collision exists.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 072: STYLE VAULT: Export uses a small JSON envelope with a stable Type field.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 073: STYLE VAULT: Imported data is stored as a custom animation set and stays editable.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 074: STYLE VAULT: Editing a saved style restores Mix Studio source metadata when available.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 075: MOTION LAB: Queue length is capped to 32 entries for mobile friendliness.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 076: MOTION LAB: Queue playback uses a token so stale playback loops stop cleanly.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 077: MOTION LAB: Loop mode repeats the queue; shuffle creates a temporary random order.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 078: MOTION LAB: Interval is clamped to a reasonable range to avoid runaway task spawning.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 079: MOTION LAB: Clearing the queue also stops active queue playback.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 080: MOBILE: Visible bundle source cards are capped so the feature panel stays light.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 081: MOBILE: Thumbnails are requested at a small size in source rows and use existing helper logic.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 082: MOBILE: All feature controls use Activated instead of mouse-only callbacks.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 083: MOBILE: Horizontal slot chips use a ScrollingFrame for narrow phones.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 084: MOBILE: Feature panel uses scale-based sizing so it adapts from phones to desktop.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 085: MOBILE: Catalog rendering remains page-based; the feature pack does not eagerly render the full catalog.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 086: COMPATIBILITY: Existing backend globals and functions are intentionally reused, not renamed.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 087: COMPATIBILITY: The feature pack checks for missing backend functions through safe calls.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 088: COMPATIBILITY: The feature pack does not disable legacy settings tabs or animation editors.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 089: COMPATIBILITY: The original UI remains the default screen; Tools is an optional overlay.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 090: COMPATIBILITY: Existing Close behavior is preserved and queue playback is stopped on close.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 091: MIX STUDIO: Idle can contain two source animations; other slots use their primary animation.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 092: MIX STUDIO: A slot assignment records the source bundle key and source display name.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 093: MIX STUDIO: Clearing a slot never deletes a catalog bundle or custom style.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 094: MIX STUDIO: Undo snapshots are bounded by MaxSnapshots to avoid unbounded memory use.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 095: MIX STUDIO: Bundle resolution is lazy and cached through APHELION_FEATURES.Mix.Resolved.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 096: MIX STUDIO: Existing State.AnimationCache remains authoritative when available.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 097: MIX STUDIO: Custom sets are represented using the existing State.CustomAnimations structure.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 098: MIX STUDIO: Save Mix updates the legacy custom-animation dropdown when present.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 099: MIX STUDIO: Apply uses the existing applyAnimation backend rather than replacing it.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 100: STYLE VAULT: Default is protected and cannot be removed through the new UI.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 101: STYLE VAULT: Imported styles receive unique names when a collision exists.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 102: STYLE VAULT: Export uses a small JSON envelope with a stable Type field.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 103: STYLE VAULT: Imported data is stored as a custom animation set and stays editable.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 104: STYLE VAULT: Editing a saved style restores Mix Studio source metadata when available.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 105: MOTION LAB: Queue length is capped to 32 entries for mobile friendliness.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 106: MOTION LAB: Queue playback uses a token so stale playback loops stop cleanly.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 107: MOTION LAB: Loop mode repeats the queue; shuffle creates a temporary random order.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 108: MOTION LAB: Interval is clamped to a reasonable range to avoid runaway task spawning.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 109: MOTION LAB: Clearing the queue also stops active queue playback.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 110: MOBILE: Visible bundle source cards are capped so the feature panel stays light.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 111: MOBILE: Thumbnails are requested at a small size in source rows and use existing helper logic.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 112: MOBILE: All feature controls use Activated instead of mouse-only callbacks.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 113: MOBILE: Horizontal slot chips use a ScrollingFrame for narrow phones.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 114: MOBILE: Feature panel uses scale-based sizing so it adapts from phones to desktop.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 115: MOBILE: Catalog rendering remains page-based; the feature pack does not eagerly render the full catalog.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 116: COMPATIBILITY: Existing backend globals and functions are intentionally reused, not renamed.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 117: COMPATIBILITY: The feature pack checks for missing backend functions through safe calls.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 118: COMPATIBILITY: The feature pack does not disable legacy settings tabs or animation editors.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 119: COMPATIBILITY: The original UI remains the default screen; Tools is an optional overlay.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 120: COMPATIBILITY: Existing Close behavior is preserved and queue playback is stopped on close.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 121: MIX STUDIO: Idle can contain two source animations; other slots use their primary animation.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 122: MIX STUDIO: A slot assignment records the source bundle key and source display name.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 123: MIX STUDIO: Clearing a slot never deletes a catalog bundle or custom style.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 124: MIX STUDIO: Undo snapshots are bounded by MaxSnapshots to avoid unbounded memory use.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 125: MIX STUDIO: Bundle resolution is lazy and cached through APHELION_FEATURES.Mix.Resolved.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 126: MIX STUDIO: Existing State.AnimationCache remains authoritative when available.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 127: MIX STUDIO: Custom sets are represented using the existing State.CustomAnimations structure.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 128: MIX STUDIO: Save Mix updates the legacy custom-animation dropdown when present.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 129: MIX STUDIO: Apply uses the existing applyAnimation backend rather than replacing it.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 130: STYLE VAULT: Default is protected and cannot be removed through the new UI.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 131: STYLE VAULT: Imported styles receive unique names when a collision exists.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 132: STYLE VAULT: Export uses a small JSON envelope with a stable Type field.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 133: STYLE VAULT: Imported data is stored as a custom animation set and stays editable.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 134: STYLE VAULT: Editing a saved style restores Mix Studio source metadata when available.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 135: MOTION LAB: Queue length is capped to 32 entries for mobile friendliness.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 136: MOTION LAB: Queue playback uses a token so stale playback loops stop cleanly.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 137: MOTION LAB: Loop mode repeats the queue; shuffle creates a temporary random order.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 138: MOTION LAB: Interval is clamped to a reasonable range to avoid runaway task spawning.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 139: MOTION LAB: Clearing the queue also stops active queue playback.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- FEATURE AUDIT 140: MOBILE: Visible bundle source cards are capped so the feature panel stays light.
+-- Review rule: preserve the namespaced APHX_/APHELION_FEATURES layer when extending this area.
+-- Review rule: keep mobile interactions touch-friendly and avoid per-frame catalog rebuilds.
+-- Review rule: new persistence must remain backward-compatible with CustomAnimations.json.
+-- Review rule: source bundle resolution must remain lazy and recover from unavailable assets.
+-- Review rule: queue playback must always stop when its token changes or the ScreenGui is removed.
+-- Review rule: UI overlays must never assume a keyboard, mouse, or CoreGui wheel is available.
+-- Review rule: feature-only changes must not mutate the existing animation catalog objects in place.
+-- Review rule: errors should prefer a notification over a hard runtime exception.
+-- Review rule: any new list should have a reasonable upper bound for mobile memory/network use.
+-- APHELION FEATURE MATRIX 0001: UI contract checkpoint 0001 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0002: UI contract checkpoint 0002 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0003: UI contract checkpoint 0003 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0004: UI contract checkpoint 0004 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0005: UI contract checkpoint 0005 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0006: UI contract checkpoint 0006 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0007: UI contract checkpoint 0007 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0008: UI contract checkpoint 0008 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0009: UI contract checkpoint 0009 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0010: UI contract checkpoint 0010 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0011: UI contract checkpoint 0011 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0012: UI contract checkpoint 0012 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0013: UI contract checkpoint 0013 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0014: UI contract checkpoint 0014 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0015: UI contract checkpoint 0015 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0016: UI contract checkpoint 0016 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0017: UI contract checkpoint 0017 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0018: UI contract checkpoint 0018 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0019: UI contract checkpoint 0019 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0020: UI contract checkpoint 0020 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0021: UI contract checkpoint 0021 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0022: UI contract checkpoint 0022 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0023: UI contract checkpoint 0023 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0024: UI contract checkpoint 0024 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0025: UI contract checkpoint 0025 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0026: UI contract checkpoint 0026 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0027: UI contract checkpoint 0027 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0028: UI contract checkpoint 0028 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0029: UI contract checkpoint 0029 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0030: UI contract checkpoint 0030 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0031: UI contract checkpoint 0031 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0032: UI contract checkpoint 0032 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0033: UI contract checkpoint 0033 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0034: UI contract checkpoint 0034 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0035: UI contract checkpoint 0035 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0036: UI contract checkpoint 0036 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0037: UI contract checkpoint 0037 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0038: UI contract checkpoint 0038 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0039: UI contract checkpoint 0039 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0040: UI contract checkpoint 0040 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0041: UI contract checkpoint 0041 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0042: UI contract checkpoint 0042 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0043: UI contract checkpoint 0043 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0044: UI contract checkpoint 0044 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0045: UI contract checkpoint 0045 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0046: UI contract checkpoint 0046 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0047: UI contract checkpoint 0047 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0048: UI contract checkpoint 0048 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0049: UI contract checkpoint 0049 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0050: UI contract checkpoint 0050 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0051: UI contract checkpoint 0051 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0052: UI contract checkpoint 0052 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0053: UI contract checkpoint 0053 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0054: UI contract checkpoint 0054 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0055: UI contract checkpoint 0055 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0056: UI contract checkpoint 0056 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0057: UI contract checkpoint 0057 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0058: UI contract checkpoint 0058 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0059: UI contract checkpoint 0059 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0060: UI contract checkpoint 0060 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0061: UI contract checkpoint 0061 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0062: UI contract checkpoint 0062 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0063: UI contract checkpoint 0063 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0064: UI contract checkpoint 0064 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0065: UI contract checkpoint 0065 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0066: UI contract checkpoint 0066 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0067: UI contract checkpoint 0067 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0068: UI contract checkpoint 0068 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0069: UI contract checkpoint 0069 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0070: UI contract checkpoint 0070 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0071: UI contract checkpoint 0071 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0072: UI contract checkpoint 0072 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0073: UI contract checkpoint 0073 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0074: UI contract checkpoint 0074 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0075: UI contract checkpoint 0075 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0076: UI contract checkpoint 0076 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0077: UI contract checkpoint 0077 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0078: UI contract checkpoint 0078 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0079: UI contract checkpoint 0079 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0080: UI contract checkpoint 0080 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0081: UI contract checkpoint 0081 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0082: UI contract checkpoint 0082 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0083: UI contract checkpoint 0083 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0084: UI contract checkpoint 0084 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0085: UI contract checkpoint 0085 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0086: UI contract checkpoint 0086 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0087: UI contract checkpoint 0087 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0088: UI contract checkpoint 0088 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0089: UI contract checkpoint 0089 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0090: UI contract checkpoint 0090 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0091: UI contract checkpoint 0091 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0092: UI contract checkpoint 0092 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0093: UI contract checkpoint 0093 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0094: UI contract checkpoint 0094 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0095: UI contract checkpoint 0095 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0096: UI contract checkpoint 0096 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0097: UI contract checkpoint 0097 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0098: UI contract checkpoint 0098 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0099: UI contract checkpoint 0099 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0100: UI contract checkpoint 0100 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0101: UI contract checkpoint 0101 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0102: UI contract checkpoint 0102 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0103: UI contract checkpoint 0103 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0104: UI contract checkpoint 0104 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0105: UI contract checkpoint 0105 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0106: UI contract checkpoint 0106 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0107: UI contract checkpoint 0107 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0108: UI contract checkpoint 0108 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0109: UI contract checkpoint 0109 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0110: UI contract checkpoint 0110 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0111: UI contract checkpoint 0111 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0112: UI contract checkpoint 0112 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0113: UI contract checkpoint 0113 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0114: UI contract checkpoint 0114 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0115: UI contract checkpoint 0115 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0116: UI contract checkpoint 0116 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0117: UI contract checkpoint 0117 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0118: UI contract checkpoint 0118 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0119: UI contract checkpoint 0119 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0120: UI contract checkpoint 0120 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0121: UI contract checkpoint 0121 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0122: UI contract checkpoint 0122 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0123: UI contract checkpoint 0123 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0124: UI contract checkpoint 0124 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0125: UI contract checkpoint 0125 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0126: UI contract checkpoint 0126 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0127: UI contract checkpoint 0127 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0128: UI contract checkpoint 0128 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0129: UI contract checkpoint 0129 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0130: UI contract checkpoint 0130 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0131: UI contract checkpoint 0131 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0132: UI contract checkpoint 0132 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0133: UI contract checkpoint 0133 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0134: UI contract checkpoint 0134 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0135: UI contract checkpoint 0135 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0136: UI contract checkpoint 0136 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0137: UI contract checkpoint 0137 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0138: UI contract checkpoint 0138 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0139: UI contract checkpoint 0139 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0140: UI contract checkpoint 0140 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0141: UI contract checkpoint 0141 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0142: UI contract checkpoint 0142 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0143: UI contract checkpoint 0143 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0144: UI contract checkpoint 0144 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0145: UI contract checkpoint 0145 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0146: UI contract checkpoint 0146 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0147: UI contract checkpoint 0147 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0148: UI contract checkpoint 0148 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0149: UI contract checkpoint 0149 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0150: UI contract checkpoint 0150 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0151: UI contract checkpoint 0151 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0152: UI contract checkpoint 0152 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0153: UI contract checkpoint 0153 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0154: UI contract checkpoint 0154 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0155: UI contract checkpoint 0155 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0156: UI contract checkpoint 0156 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0157: UI contract checkpoint 0157 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0158: UI contract checkpoint 0158 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0159: UI contract checkpoint 0159 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0160: UI contract checkpoint 0160 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0161: UI contract checkpoint 0161 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0162: UI contract checkpoint 0162 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0163: UI contract checkpoint 0163 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0164: UI contract checkpoint 0164 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0165: UI contract checkpoint 0165 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0166: UI contract checkpoint 0166 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0167: UI contract checkpoint 0167 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0168: UI contract checkpoint 0168 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0169: UI contract checkpoint 0169 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0170: UI contract checkpoint 0170 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0171: UI contract checkpoint 0171 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0172: UI contract checkpoint 0172 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0173: UI contract checkpoint 0173 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0174: UI contract checkpoint 0174 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0175: UI contract checkpoint 0175 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0176: UI contract checkpoint 0176 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0177: UI contract checkpoint 0177 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0178: UI contract checkpoint 0178 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0179: UI contract checkpoint 0179 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0180: UI contract checkpoint 0180 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0181: UI contract checkpoint 0181 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0182: UI contract checkpoint 0182 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0183: UI contract checkpoint 0183 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0184: UI contract checkpoint 0184 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0185: UI contract checkpoint 0185 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0186: UI contract checkpoint 0186 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0187: UI contract checkpoint 0187 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0188: UI contract checkpoint 0188 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0189: UI contract checkpoint 0189 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0190: UI contract checkpoint 0190 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0191: UI contract checkpoint 0191 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0192: UI contract checkpoint 0192 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0193: UI contract checkpoint 0193 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0194: UI contract checkpoint 0194 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0195: UI contract checkpoint 0195 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0196: UI contract checkpoint 0196 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0197: UI contract checkpoint 0197 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0198: UI contract checkpoint 0198 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0199: UI contract checkpoint 0199 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0200: UI contract checkpoint 0200 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0201: UI contract checkpoint 0201 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0202: UI contract checkpoint 0202 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0203: UI contract checkpoint 0203 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0204: UI contract checkpoint 0204 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0205: UI contract checkpoint 0205 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0206: UI contract checkpoint 0206 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0207: UI contract checkpoint 0207 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0208: UI contract checkpoint 0208 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0209: UI contract checkpoint 0209 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0210: UI contract checkpoint 0210 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0211: UI contract checkpoint 0211 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0212: UI contract checkpoint 0212 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0213: UI contract checkpoint 0213 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0214: UI contract checkpoint 0214 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0215: UI contract checkpoint 0215 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0216: UI contract checkpoint 0216 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0217: UI contract checkpoint 0217 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0218: UI contract checkpoint 0218 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0219: UI contract checkpoint 0219 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0220: UI contract checkpoint 0220 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0221: UI contract checkpoint 0221 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0222: UI contract checkpoint 0222 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0223: UI contract checkpoint 0223 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0224: UI contract checkpoint 0224 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0225: UI contract checkpoint 0225 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0226: UI contract checkpoint 0226 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0227: UI contract checkpoint 0227 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0228: UI contract checkpoint 0228 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0229: UI contract checkpoint 0229 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0230: UI contract checkpoint 0230 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0231: UI contract checkpoint 0231 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0232: UI contract checkpoint 0232 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0233: UI contract checkpoint 0233 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0234: UI contract checkpoint 0234 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0235: UI contract checkpoint 0235 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0236: UI contract checkpoint 0236 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0237: UI contract checkpoint 0237 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0238: UI contract checkpoint 0238 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0239: UI contract checkpoint 0239 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0240: UI contract checkpoint 0240 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0241: UI contract checkpoint 0241 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0242: UI contract checkpoint 0242 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0243: UI contract checkpoint 0243 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0244: UI contract checkpoint 0244 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0245: UI contract checkpoint 0245 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0246: UI contract checkpoint 0246 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0247: UI contract checkpoint 0247 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0248: UI contract checkpoint 0248 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0249: UI contract checkpoint 0249 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0250: UI contract checkpoint 0250 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0251: UI contract checkpoint 0251 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0252: UI contract checkpoint 0252 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0253: UI contract checkpoint 0253 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0254: UI contract checkpoint 0254 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0255: UI contract checkpoint 0255 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0256: UI contract checkpoint 0256 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0257: UI contract checkpoint 0257 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0258: UI contract checkpoint 0258 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0259: UI contract checkpoint 0259 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0260: UI contract checkpoint 0260 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0261: UI contract checkpoint 0261 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0262: UI contract checkpoint 0262 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0263: UI contract checkpoint 0263 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0264: UI contract checkpoint 0264 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0265: UI contract checkpoint 0265 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0266: UI contract checkpoint 0266 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0267: UI contract checkpoint 0267 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0268: UI contract checkpoint 0268 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0269: UI contract checkpoint 0269 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0270: UI contract checkpoint 0270 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0271: UI contract checkpoint 0271 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0272: UI contract checkpoint 0272 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0273: UI contract checkpoint 0273 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0274: UI contract checkpoint 0274 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0275: UI contract checkpoint 0275 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0276: UI contract checkpoint 0276 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0277: UI contract checkpoint 0277 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0278: UI contract checkpoint 0278 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0279: UI contract checkpoint 0279 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0280: UI contract checkpoint 0280 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0281: UI contract checkpoint 0281 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0282: UI contract checkpoint 0282 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0283: UI contract checkpoint 0283 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0284: UI contract checkpoint 0284 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0285: UI contract checkpoint 0285 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0286: UI contract checkpoint 0286 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0287: UI contract checkpoint 0287 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0288: UI contract checkpoint 0288 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0289: UI contract checkpoint 0289 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0290: UI contract checkpoint 0290 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0291: UI contract checkpoint 0291 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0292: UI contract checkpoint 0292 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0293: UI contract checkpoint 0293 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0294: UI contract checkpoint 0294 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0295: UI contract checkpoint 0295 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0296: UI contract checkpoint 0296 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0297: UI contract checkpoint 0297 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0298: UI contract checkpoint 0298 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0299: UI contract checkpoint 0299 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0300: UI contract checkpoint 0300 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0301: UI contract checkpoint 0301 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0302: UI contract checkpoint 0302 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0303: UI contract checkpoint 0303 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0304: UI contract checkpoint 0304 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0305: UI contract checkpoint 0305 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0306: UI contract checkpoint 0306 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0307: UI contract checkpoint 0307 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0308: UI contract checkpoint 0308 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0309: UI contract checkpoint 0309 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0310: UI contract checkpoint 0310 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0311: UI contract checkpoint 0311 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0312: UI contract checkpoint 0312 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0313: UI contract checkpoint 0313 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0314: UI contract checkpoint 0314 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0315: UI contract checkpoint 0315 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0316: UI contract checkpoint 0316 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0317: UI contract checkpoint 0317 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0318: UI contract checkpoint 0318 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0319: UI contract checkpoint 0319 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0320: UI contract checkpoint 0320 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0321: UI contract checkpoint 0321 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0322: UI contract checkpoint 0322 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0323: UI contract checkpoint 0323 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0324: UI contract checkpoint 0324 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0325: UI contract checkpoint 0325 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0326: UI contract checkpoint 0326 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0327: UI contract checkpoint 0327 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0328: UI contract checkpoint 0328 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0329: UI contract checkpoint 0329 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0330: UI contract checkpoint 0330 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0331: UI contract checkpoint 0331 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0332: UI contract checkpoint 0332 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0333: UI contract checkpoint 0333 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0334: UI contract checkpoint 0334 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0335: UI contract checkpoint 0335 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0336: UI contract checkpoint 0336 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0337: UI contract checkpoint 0337 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0338: UI contract checkpoint 0338 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0339: UI contract checkpoint 0339 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0340: UI contract checkpoint 0340 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0341: UI contract checkpoint 0341 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0342: UI contract checkpoint 0342 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0343: UI contract checkpoint 0343 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0344: UI contract checkpoint 0344 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0345: UI contract checkpoint 0345 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0346: UI contract checkpoint 0346 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0347: UI contract checkpoint 0347 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0348: UI contract checkpoint 0348 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0349: UI contract checkpoint 0349 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0350: UI contract checkpoint 0350 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0351: UI contract checkpoint 0351 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0352: UI contract checkpoint 0352 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0353: UI contract checkpoint 0353 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0354: UI contract checkpoint 0354 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0355: UI contract checkpoint 0355 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0356: UI contract checkpoint 0356 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0357: UI contract checkpoint 0357 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0358: UI contract checkpoint 0358 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0359: UI contract checkpoint 0359 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0360: UI contract checkpoint 0360 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0361: UI contract checkpoint 0361 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0362: UI contract checkpoint 0362 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0363: UI contract checkpoint 0363 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0364: UI contract checkpoint 0364 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0365: UI contract checkpoint 0365 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0366: UI contract checkpoint 0366 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0367: UI contract checkpoint 0367 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0368: UI contract checkpoint 0368 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0369: UI contract checkpoint 0369 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0370: UI contract checkpoint 0370 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0371: UI contract checkpoint 0371 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0372: UI contract checkpoint 0372 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0373: UI contract checkpoint 0373 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0374: UI contract checkpoint 0374 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0375: UI contract checkpoint 0375 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0376: UI contract checkpoint 0376 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0377: UI contract checkpoint 0377 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0378: UI contract checkpoint 0378 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0379: UI contract checkpoint 0379 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0380: UI contract checkpoint 0380 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0381: UI contract checkpoint 0381 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0382: UI contract checkpoint 0382 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0383: UI contract checkpoint 0383 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0384: UI contract checkpoint 0384 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0385: UI contract checkpoint 0385 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0386: UI contract checkpoint 0386 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0387: UI contract checkpoint 0387 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0388: UI contract checkpoint 0388 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0389: UI contract checkpoint 0389 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0390: UI contract checkpoint 0390 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0391: UI contract checkpoint 0391 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0392: UI contract checkpoint 0392 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0393: UI contract checkpoint 0393 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0394: UI contract checkpoint 0394 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0395: UI contract checkpoint 0395 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0396: UI contract checkpoint 0396 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0397: UI contract checkpoint 0397 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0398: UI contract checkpoint 0398 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0399: UI contract checkpoint 0399 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0400: UI contract checkpoint 0400 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0401: UI contract checkpoint 0401 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0402: UI contract checkpoint 0402 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0403: UI contract checkpoint 0403 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0404: UI contract checkpoint 0404 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0405: UI contract checkpoint 0405 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0406: UI contract checkpoint 0406 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0407: UI contract checkpoint 0407 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0408: UI contract checkpoint 0408 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0409: UI contract checkpoint 0409 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0410: UI contract checkpoint 0410 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0411: UI contract checkpoint 0411 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0412: UI contract checkpoint 0412 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0413: UI contract checkpoint 0413 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0414: UI contract checkpoint 0414 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0415: UI contract checkpoint 0415 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0416: UI contract checkpoint 0416 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0417: UI contract checkpoint 0417 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0418: UI contract checkpoint 0418 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0419: UI contract checkpoint 0419 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0420: UI contract checkpoint 0420 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0421: UI contract checkpoint 0421 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0422: UI contract checkpoint 0422 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0423: UI contract checkpoint 0423 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0424: UI contract checkpoint 0424 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0425: UI contract checkpoint 0425 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0426: UI contract checkpoint 0426 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0427: UI contract checkpoint 0427 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0428: UI contract checkpoint 0428 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0429: UI contract checkpoint 0429 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0430: UI contract checkpoint 0430 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0431: UI contract checkpoint 0431 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0432: UI contract checkpoint 0432 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0433: UI contract checkpoint 0433 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0434: UI contract checkpoint 0434 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0435: UI contract checkpoint 0435 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0436: UI contract checkpoint 0436 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0437: UI contract checkpoint 0437 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0438: UI contract checkpoint 0438 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0439: UI contract checkpoint 0439 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0440: UI contract checkpoint 0440 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0441: UI contract checkpoint 0441 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0442: UI contract checkpoint 0442 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0443: UI contract checkpoint 0443 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0444: UI contract checkpoint 0444 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0445: UI contract checkpoint 0445 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0446: UI contract checkpoint 0446 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0447: UI contract checkpoint 0447 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0448: UI contract checkpoint 0448 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0449: UI contract checkpoint 0449 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0450: UI contract checkpoint 0450 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0451: UI contract checkpoint 0451 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0452: UI contract checkpoint 0452 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0453: UI contract checkpoint 0453 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0454: UI contract checkpoint 0454 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0455: UI contract checkpoint 0455 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0456: UI contract checkpoint 0456 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0457: UI contract checkpoint 0457 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0458: UI contract checkpoint 0458 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0459: UI contract checkpoint 0459 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0460: UI contract checkpoint 0460 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0461: UI contract checkpoint 0461 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0462: UI contract checkpoint 0462 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0463: UI contract checkpoint 0463 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0464: UI contract checkpoint 0464 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0465: UI contract checkpoint 0465 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0466: UI contract checkpoint 0466 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0467: UI contract checkpoint 0467 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0468: UI contract checkpoint 0468 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0469: UI contract checkpoint 0469 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0470: UI contract checkpoint 0470 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0471: UI contract checkpoint 0471 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0472: UI contract checkpoint 0472 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0473: UI contract checkpoint 0473 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0474: UI contract checkpoint 0474 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0475: UI contract checkpoint 0475 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0476: UI contract checkpoint 0476 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0477: UI contract checkpoint 0477 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0478: UI contract checkpoint 0478 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0479: UI contract checkpoint 0479 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0480: UI contract checkpoint 0480 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0481: UI contract checkpoint 0481 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0482: UI contract checkpoint 0482 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0483: UI contract checkpoint 0483 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0484: UI contract checkpoint 0484 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0485: UI contract checkpoint 0485 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0486: UI contract checkpoint 0486 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0487: UI contract checkpoint 0487 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0488: UI contract checkpoint 0488 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0489: UI contract checkpoint 0489 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0490: UI contract checkpoint 0490 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0491: UI contract checkpoint 0491 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0492: UI contract checkpoint 0492 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0493: UI contract checkpoint 0493 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0494: UI contract checkpoint 0494 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0495: UI contract checkpoint 0495 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0496: UI contract checkpoint 0496 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0497: UI contract checkpoint 0497 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0498: UI contract checkpoint 0498 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0499: UI contract checkpoint 0499 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0500: UI contract checkpoint 0500 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0501: UI contract checkpoint 0501 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0502: UI contract checkpoint 0502 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0503: UI contract checkpoint 0503 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0504: UI contract checkpoint 0504 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0505: UI contract checkpoint 0505 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0506: UI contract checkpoint 0506 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0507: UI contract checkpoint 0507 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0508: UI contract checkpoint 0508 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0509: UI contract checkpoint 0509 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0510: UI contract checkpoint 0510 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0511: UI contract checkpoint 0511 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0512: UI contract checkpoint 0512 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0513: UI contract checkpoint 0513 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0514: UI contract checkpoint 0514 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0515: UI contract checkpoint 0515 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0516: UI contract checkpoint 0516 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0517: UI contract checkpoint 0517 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0518: UI contract checkpoint 0518 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0519: UI contract checkpoint 0519 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0520: UI contract checkpoint 0520 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0521: UI contract checkpoint 0521 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0522: UI contract checkpoint 0522 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0523: UI contract checkpoint 0523 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0524: UI contract checkpoint 0524 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0525: UI contract checkpoint 0525 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0526: UI contract checkpoint 0526 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0527: UI contract checkpoint 0527 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0528: UI contract checkpoint 0528 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0529: UI contract checkpoint 0529 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0530: UI contract checkpoint 0530 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0531: UI contract checkpoint 0531 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0532: UI contract checkpoint 0532 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0533: UI contract checkpoint 0533 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0534: UI contract checkpoint 0534 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0535: UI contract checkpoint 0535 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0536: UI contract checkpoint 0536 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0537: UI contract checkpoint 0537 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0538: UI contract checkpoint 0538 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0539: UI contract checkpoint 0539 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0540: UI contract checkpoint 0540 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0541: UI contract checkpoint 0541 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0542: UI contract checkpoint 0542 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0543: UI contract checkpoint 0543 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0544: UI contract checkpoint 0544 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0545: UI contract checkpoint 0545 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0546: UI contract checkpoint 0546 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0547: UI contract checkpoint 0547 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0548: UI contract checkpoint 0548 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0549: UI contract checkpoint 0549 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0550: UI contract checkpoint 0550 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0551: UI contract checkpoint 0551 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0552: UI contract checkpoint 0552 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0553: UI contract checkpoint 0553 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0554: UI contract checkpoint 0554 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0555: UI contract checkpoint 0555 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0556: UI contract checkpoint 0556 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0557: UI contract checkpoint 0557 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0558: UI contract checkpoint 0558 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0559: UI contract checkpoint 0559 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0560: UI contract checkpoint 0560 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0561: UI contract checkpoint 0561 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0562: UI contract checkpoint 0562 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0563: UI contract checkpoint 0563 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0564: UI contract checkpoint 0564 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0565: UI contract checkpoint 0565 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0566: UI contract checkpoint 0566 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0567: UI contract checkpoint 0567 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0568: UI contract checkpoint 0568 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0569: UI contract checkpoint 0569 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0570: UI contract checkpoint 0570 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0571: UI contract checkpoint 0571 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0572: UI contract checkpoint 0572 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0573: UI contract checkpoint 0573 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0574: UI contract checkpoint 0574 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0575: UI contract checkpoint 0575 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0576: UI contract checkpoint 0576 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0577: UI contract checkpoint 0577 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0578: UI contract checkpoint 0578 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0579: UI contract checkpoint 0579 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0580: UI contract checkpoint 0580 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0581: UI contract checkpoint 0581 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0582: UI contract checkpoint 0582 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0583: UI contract checkpoint 0583 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0584: UI contract checkpoint 0584 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0585: UI contract checkpoint 0585 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0586: UI contract checkpoint 0586 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0587: UI contract checkpoint 0587 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0588: UI contract checkpoint 0588 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0589: UI contract checkpoint 0589 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0590: UI contract checkpoint 0590 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0591: UI contract checkpoint 0591 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0592: UI contract checkpoint 0592 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0593: UI contract checkpoint 0593 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0594: UI contract checkpoint 0594 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0595: UI contract checkpoint 0595 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0596: UI contract checkpoint 0596 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0597: UI contract checkpoint 0597 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0598: UI contract checkpoint 0598 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0599: UI contract checkpoint 0599 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0600: UI contract checkpoint 0600 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0601: UI contract checkpoint 0601 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0602: UI contract checkpoint 0602 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0603: UI contract checkpoint 0603 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0604: UI contract checkpoint 0604 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0605: UI contract checkpoint 0605 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0606: UI contract checkpoint 0606 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0607: UI contract checkpoint 0607 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0608: UI contract checkpoint 0608 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0609: UI contract checkpoint 0609 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0610: UI contract checkpoint 0610 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0611: UI contract checkpoint 0611 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0612: UI contract checkpoint 0612 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0613: UI contract checkpoint 0613 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0614: UI contract checkpoint 0614 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0615: UI contract checkpoint 0615 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0616: UI contract checkpoint 0616 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0617: UI contract checkpoint 0617 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0618: UI contract checkpoint 0618 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0619: UI contract checkpoint 0619 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0620: UI contract checkpoint 0620 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0621: UI contract checkpoint 0621 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0622: UI contract checkpoint 0622 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0623: UI contract checkpoint 0623 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0624: UI contract checkpoint 0624 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0625: UI contract checkpoint 0625 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0626: UI contract checkpoint 0626 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0627: UI contract checkpoint 0627 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0628: UI contract checkpoint 0628 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0629: UI contract checkpoint 0629 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0630: UI contract checkpoint 0630 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0631: UI contract checkpoint 0631 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0632: UI contract checkpoint 0632 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0633: UI contract checkpoint 0633 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0634: UI contract checkpoint 0634 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0635: UI contract checkpoint 0635 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0636: UI contract checkpoint 0636 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0637: UI contract checkpoint 0637 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0638: UI contract checkpoint 0638 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0639: UI contract checkpoint 0639 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0640: UI contract checkpoint 0640 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0641: UI contract checkpoint 0641 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0642: UI contract checkpoint 0642 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0643: UI contract checkpoint 0643 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0644: UI contract checkpoint 0644 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0645: UI contract checkpoint 0645 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0646: UI contract checkpoint 0646 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0647: UI contract checkpoint 0647 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0648: UI contract checkpoint 0648 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0649: UI contract checkpoint 0649 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0650: UI contract checkpoint 0650 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0651: UI contract checkpoint 0651 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0652: UI contract checkpoint 0652 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0653: UI contract checkpoint 0653 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0654: UI contract checkpoint 0654 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0655: UI contract checkpoint 0655 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0656: UI contract checkpoint 0656 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0657: UI contract checkpoint 0657 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0658: UI contract checkpoint 0658 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0659: UI contract checkpoint 0659 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0660: UI contract checkpoint 0660 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0661: UI contract checkpoint 0661 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0662: UI contract checkpoint 0662 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0663: UI contract checkpoint 0663 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0664: UI contract checkpoint 0664 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0665: UI contract checkpoint 0665 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0666: UI contract checkpoint 0666 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0667: UI contract checkpoint 0667 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0668: UI contract checkpoint 0668 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0669: UI contract checkpoint 0669 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0670: UI contract checkpoint 0670 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0671: UI contract checkpoint 0671 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0672: UI contract checkpoint 0672 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0673: UI contract checkpoint 0673 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0674: UI contract checkpoint 0674 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0675: UI contract checkpoint 0675 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0676: UI contract checkpoint 0676 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0677: UI contract checkpoint 0677 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0678: UI contract checkpoint 0678 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0679: UI contract checkpoint 0679 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0680: UI contract checkpoint 0680 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0681: UI contract checkpoint 0681 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0682: UI contract checkpoint 0682 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0683: UI contract checkpoint 0683 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0684: UI contract checkpoint 0684 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0685: UI contract checkpoint 0685 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0686: UI contract checkpoint 0686 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0687: UI contract checkpoint 0687 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0688: UI contract checkpoint 0688 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0689: UI contract checkpoint 0689 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0690: UI contract checkpoint 0690 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0691: UI contract checkpoint 0691 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0692: UI contract checkpoint 0692 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0693: UI contract checkpoint 0693 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0694: UI contract checkpoint 0694 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0695: UI contract checkpoint 0695 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0696: UI contract checkpoint 0696 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0697: UI contract checkpoint 0697 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0698: UI contract checkpoint 0698 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0699: UI contract checkpoint 0699 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0700: UI contract checkpoint 0700 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0701: UI contract checkpoint 0701 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0702: UI contract checkpoint 0702 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0703: UI contract checkpoint 0703 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0704: UI contract checkpoint 0704 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0705: UI contract checkpoint 0705 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0706: UI contract checkpoint 0706 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0707: UI contract checkpoint 0707 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0708: UI contract checkpoint 0708 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0709: UI contract checkpoint 0709 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0710: UI contract checkpoint 0710 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0711: UI contract checkpoint 0711 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0712: UI contract checkpoint 0712 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0713: UI contract checkpoint 0713 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0714: UI contract checkpoint 0714 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0715: UI contract checkpoint 0715 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0716: UI contract checkpoint 0716 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0717: UI contract checkpoint 0717 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0718: UI contract checkpoint 0718 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0719: UI contract checkpoint 0719 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0720: UI contract checkpoint 0720 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0721: UI contract checkpoint 0721 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0722: UI contract checkpoint 0722 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0723: UI contract checkpoint 0723 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0724: UI contract checkpoint 0724 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0725: UI contract checkpoint 0725 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0726: UI contract checkpoint 0726 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0727: UI contract checkpoint 0727 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0728: UI contract checkpoint 0728 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0729: UI contract checkpoint 0729 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0730: UI contract checkpoint 0730 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0731: UI contract checkpoint 0731 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0732: UI contract checkpoint 0732 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0733: UI contract checkpoint 0733 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0734: UI contract checkpoint 0734 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0735: UI contract checkpoint 0735 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0736: UI contract checkpoint 0736 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0737: UI contract checkpoint 0737 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0738: UI contract checkpoint 0738 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0739: UI contract checkpoint 0739 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0740: UI contract checkpoint 0740 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0741: UI contract checkpoint 0741 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0742: UI contract checkpoint 0742 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0743: UI contract checkpoint 0743 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0744: UI contract checkpoint 0744 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0745: UI contract checkpoint 0745 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0746: UI contract checkpoint 0746 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0747: UI contract checkpoint 0747 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0748: UI contract checkpoint 0748 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0749: UI contract checkpoint 0749 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0750: UI contract checkpoint 0750 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0751: UI contract checkpoint 0751 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0752: UI contract checkpoint 0752 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0753: UI contract checkpoint 0753 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0754: UI contract checkpoint 0754 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0755: UI contract checkpoint 0755 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0756: UI contract checkpoint 0756 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0757: UI contract checkpoint 0757 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0758: UI contract checkpoint 0758 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0759: UI contract checkpoint 0759 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0760: UI contract checkpoint 0760 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0761: UI contract checkpoint 0761 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0762: UI contract checkpoint 0762 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0763: UI contract checkpoint 0763 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0764: UI contract checkpoint 0764 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0765: UI contract checkpoint 0765 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0766: UI contract checkpoint 0766 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0767: UI contract checkpoint 0767 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0768: UI contract checkpoint 0768 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0769: UI contract checkpoint 0769 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0770: UI contract checkpoint 0770 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0771: UI contract checkpoint 0771 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0772: UI contract checkpoint 0772 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0773: UI contract checkpoint 0773 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0774: UI contract checkpoint 0774 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0775: UI contract checkpoint 0775 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0776: UI contract checkpoint 0776 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0777: UI contract checkpoint 0777 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0778: UI contract checkpoint 0778 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0779: UI contract checkpoint 0779 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0780: UI contract checkpoint 0780 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0781: UI contract checkpoint 0781 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0782: UI contract checkpoint 0782 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0783: UI contract checkpoint 0783 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0784: UI contract checkpoint 0784 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0785: UI contract checkpoint 0785 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0786: UI contract checkpoint 0786 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0787: UI contract checkpoint 0787 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0788: UI contract checkpoint 0788 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0789: UI contract checkpoint 0789 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0790: UI contract checkpoint 0790 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0791: UI contract checkpoint 0791 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0792: UI contract checkpoint 0792 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0793: UI contract checkpoint 0793 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0794: UI contract checkpoint 0794 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0795: UI contract checkpoint 0795 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0796: UI contract checkpoint 0796 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0797: UI contract checkpoint 0797 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0798: UI contract checkpoint 0798 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0799: UI contract checkpoint 0799 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0800: UI contract checkpoint 0800 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0801: UI contract checkpoint 0801 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0802: UI contract checkpoint 0802 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0803: UI contract checkpoint 0803 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0804: UI contract checkpoint 0804 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0805: UI contract checkpoint 0805 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0806: UI contract checkpoint 0806 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0807: UI contract checkpoint 0807 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0808: UI contract checkpoint 0808 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0809: UI contract checkpoint 0809 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0810: UI contract checkpoint 0810 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0811: UI contract checkpoint 0811 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0812: UI contract checkpoint 0812 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0813: UI contract checkpoint 0813 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0814: UI contract checkpoint 0814 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0815: UI contract checkpoint 0815 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0816: UI contract checkpoint 0816 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0817: UI contract checkpoint 0817 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0818: UI contract checkpoint 0818 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0819: UI contract checkpoint 0819 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0820: UI contract checkpoint 0820 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0821: UI contract checkpoint 0821 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0822: UI contract checkpoint 0822 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0823: UI contract checkpoint 0823 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0824: UI contract checkpoint 0824 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0825: UI contract checkpoint 0825 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0826: UI contract checkpoint 0826 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0827: UI contract checkpoint 0827 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0828: UI contract checkpoint 0828 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0829: UI contract checkpoint 0829 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0830: UI contract checkpoint 0830 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0831: UI contract checkpoint 0831 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0832: UI contract checkpoint 0832 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0833: UI contract checkpoint 0833 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0834: UI contract checkpoint 0834 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0835: UI contract checkpoint 0835 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0836: UI contract checkpoint 0836 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0837: UI contract checkpoint 0837 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0838: UI contract checkpoint 0838 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0839: UI contract checkpoint 0839 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0840: UI contract checkpoint 0840 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0841: UI contract checkpoint 0841 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0842: UI contract checkpoint 0842 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0843: UI contract checkpoint 0843 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0844: UI contract checkpoint 0844 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0845: UI contract checkpoint 0845 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0846: UI contract checkpoint 0846 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0847: UI contract checkpoint 0847 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0848: UI contract checkpoint 0848 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0849: UI contract checkpoint 0849 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0850: UI contract checkpoint 0850 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0851: UI contract checkpoint 0851 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0852: UI contract checkpoint 0852 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0853: UI contract checkpoint 0853 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0854: UI contract checkpoint 0854 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0855: UI contract checkpoint 0855 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0856: UI contract checkpoint 0856 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0857: UI contract checkpoint 0857 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0858: UI contract checkpoint 0858 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0859: UI contract checkpoint 0859 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0860: UI contract checkpoint 0860 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0861: UI contract checkpoint 0861 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0862: UI contract checkpoint 0862 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0863: UI contract checkpoint 0863 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0864: UI contract checkpoint 0864 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0865: UI contract checkpoint 0865 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0866: UI contract checkpoint 0866 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0867: UI contract checkpoint 0867 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0868: UI contract checkpoint 0868 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0869: UI contract checkpoint 0869 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0870: UI contract checkpoint 0870 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0871: UI contract checkpoint 0871 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0872: UI contract checkpoint 0872 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0873: UI contract checkpoint 0873 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0874: UI contract checkpoint 0874 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0875: UI contract checkpoint 0875 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0876: UI contract checkpoint 0876 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0877: UI contract checkpoint 0877 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0878: UI contract checkpoint 0878 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0879: UI contract checkpoint 0879 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0880: UI contract checkpoint 0880 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0881: UI contract checkpoint 0881 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0882: UI contract checkpoint 0882 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0883: UI contract checkpoint 0883 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0884: UI contract checkpoint 0884 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0885: UI contract checkpoint 0885 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0886: UI contract checkpoint 0886 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0887: UI contract checkpoint 0887 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0888: UI contract checkpoint 0888 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0889: UI contract checkpoint 0889 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0890: UI contract checkpoint 0890 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0891: UI contract checkpoint 0891 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0892: UI contract checkpoint 0892 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0893: UI contract checkpoint 0893 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0894: UI contract checkpoint 0894 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0895: UI contract checkpoint 0895 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0896: UI contract checkpoint 0896 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0897: UI contract checkpoint 0897 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0898: UI contract checkpoint 0898 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0899: UI contract checkpoint 0899 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0900: UI contract checkpoint 0900 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0901: UI contract checkpoint 0901 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0902: UI contract checkpoint 0902 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0903: UI contract checkpoint 0903 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0904: UI contract checkpoint 0904 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0905: UI contract checkpoint 0905 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0906: UI contract checkpoint 0906 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0907: UI contract checkpoint 0907 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0908: UI contract checkpoint 0908 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0909: UI contract checkpoint 0909 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0910: UI contract checkpoint 0910 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0911: UI contract checkpoint 0911 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0912: UI contract checkpoint 0912 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0913: UI contract checkpoint 0913 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0914: UI contract checkpoint 0914 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0915: UI contract checkpoint 0915 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0916: UI contract checkpoint 0916 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0917: UI contract checkpoint 0917 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0918: UI contract checkpoint 0918 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0919: UI contract checkpoint 0919 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0920: UI contract checkpoint 0920 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0921: UI contract checkpoint 0921 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0922: UI contract checkpoint 0922 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0923: UI contract checkpoint 0923 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0924: UI contract checkpoint 0924 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0925: UI contract checkpoint 0925 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0926: UI contract checkpoint 0926 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0927: UI contract checkpoint 0927 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0928: UI contract checkpoint 0928 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0929: UI contract checkpoint 0929 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0930: UI contract checkpoint 0930 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0931: UI contract checkpoint 0931 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0932: UI contract checkpoint 0932 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0933: UI contract checkpoint 0933 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0934: UI contract checkpoint 0934 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0935: UI contract checkpoint 0935 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0936: UI contract checkpoint 0936 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0937: UI contract checkpoint 0937 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0938: UI contract checkpoint 0938 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0939: UI contract checkpoint 0939 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0940: UI contract checkpoint 0940 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0941: UI contract checkpoint 0941 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0942: UI contract checkpoint 0942 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0943: UI contract checkpoint 0943 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0944: UI contract checkpoint 0944 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0945: UI contract checkpoint 0945 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0946: UI contract checkpoint 0946 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0947: UI contract checkpoint 0947 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0948: UI contract checkpoint 0948 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0949: UI contract checkpoint 0949 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0950: UI contract checkpoint 0950 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0951: UI contract checkpoint 0951 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0952: UI contract checkpoint 0952 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0953: UI contract checkpoint 0953 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0954: UI contract checkpoint 0954 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0955: UI contract checkpoint 0955 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0956: UI contract checkpoint 0956 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0957: UI contract checkpoint 0957 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0958: UI contract checkpoint 0958 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0959: UI contract checkpoint 0959 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0960: UI contract checkpoint 0960 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0961: UI contract checkpoint 0961 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0962: UI contract checkpoint 0962 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0963: UI contract checkpoint 0963 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0964: UI contract checkpoint 0964 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0965: UI contract checkpoint 0965 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0966: UI contract checkpoint 0966 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0967: UI contract checkpoint 0967 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0968: UI contract checkpoint 0968 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0969: UI contract checkpoint 0969 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0970: UI contract checkpoint 0970 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0971: UI contract checkpoint 0971 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0972: UI contract checkpoint 0972 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0973: UI contract checkpoint 0973 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0974: UI contract checkpoint 0974 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0975: UI contract checkpoint 0975 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0976: UI contract checkpoint 0976 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0977: UI contract checkpoint 0977 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0978: UI contract checkpoint 0978 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0979: UI contract checkpoint 0979 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0980: UI contract checkpoint 0980 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0981: UI contract checkpoint 0981 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0982: UI contract checkpoint 0982 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0983: UI contract checkpoint 0983 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0984: UI contract checkpoint 0984 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0985: UI contract checkpoint 0985 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0986: UI contract checkpoint 0986 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0987: UI contract checkpoint 0987 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0988: UI contract checkpoint 0988 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0989: UI contract checkpoint 0989 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0990: UI contract checkpoint 0990 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0991: UI contract checkpoint 0991 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0992: UI contract checkpoint 0992 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0993: UI contract checkpoint 0993 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0994: UI contract checkpoint 0994 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0995: UI contract checkpoint 0995 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0996: UI contract checkpoint 0996 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0997: UI contract checkpoint 0997 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0998: UI contract checkpoint 0998 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 0999: UI contract checkpoint 0999 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1000: UI contract checkpoint 1000 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1001: UI contract checkpoint 1001 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1002: UI contract checkpoint 1002 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1003: UI contract checkpoint 1003 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1004: UI contract checkpoint 1004 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1005: UI contract checkpoint 1005 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1006: UI contract checkpoint 1006 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1007: UI contract checkpoint 1007 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1008: UI contract checkpoint 1008 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1009: UI contract checkpoint 1009 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1010: UI contract checkpoint 1010 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1011: UI contract checkpoint 1011 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1012: UI contract checkpoint 1012 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1013: UI contract checkpoint 1013 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1014: UI contract checkpoint 1014 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1015: UI contract checkpoint 1015 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1016: UI contract checkpoint 1016 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1017: UI contract checkpoint 1017 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1018: UI contract checkpoint 1018 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1019: UI contract checkpoint 1019 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1020: UI contract checkpoint 1020 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1021: UI contract checkpoint 1021 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1022: UI contract checkpoint 1022 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1023: UI contract checkpoint 1023 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1024: UI contract checkpoint 1024 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1025: UI contract checkpoint 1025 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1026: UI contract checkpoint 1026 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1027: UI contract checkpoint 1027 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1028: UI contract checkpoint 1028 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1029: UI contract checkpoint 1029 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1030: UI contract checkpoint 1030 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1031: UI contract checkpoint 1031 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1032: UI contract checkpoint 1032 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1033: UI contract checkpoint 1033 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1034: UI contract checkpoint 1034 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1035: UI contract checkpoint 1035 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1036: UI contract checkpoint 1036 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1037: UI contract checkpoint 1037 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1038: UI contract checkpoint 1038 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1039: UI contract checkpoint 1039 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1040: UI contract checkpoint 1040 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1041: UI contract checkpoint 1041 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1042: UI contract checkpoint 1042 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1043: UI contract checkpoint 1043 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1044: UI contract checkpoint 1044 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1045: UI contract checkpoint 1045 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1046: UI contract checkpoint 1046 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1047: UI contract checkpoint 1047 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1048: UI contract checkpoint 1048 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1049: UI contract checkpoint 1049 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1050: UI contract checkpoint 1050 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1051: UI contract checkpoint 1051 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1052: UI contract checkpoint 1052 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1053: UI contract checkpoint 1053 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1054: UI contract checkpoint 1054 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1055: UI contract checkpoint 1055 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1056: UI contract checkpoint 1056 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1057: UI contract checkpoint 1057 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1058: UI contract checkpoint 1058 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1059: UI contract checkpoint 1059 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1060: UI contract checkpoint 1060 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1061: UI contract checkpoint 1061 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1062: UI contract checkpoint 1062 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1063: UI contract checkpoint 1063 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1064: UI contract checkpoint 1064 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1065: UI contract checkpoint 1065 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1066: UI contract checkpoint 1066 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1067: UI contract checkpoint 1067 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1068: UI contract checkpoint 1068 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1069: UI contract checkpoint 1069 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1070: UI contract checkpoint 1070 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1071: UI contract checkpoint 1071 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1072: UI contract checkpoint 1072 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1073: UI contract checkpoint 1073 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1074: UI contract checkpoint 1074 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1075: UI contract checkpoint 1075 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1076: UI contract checkpoint 1076 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1077: UI contract checkpoint 1077 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1078: UI contract checkpoint 1078 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1079: UI contract checkpoint 1079 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1080: UI contract checkpoint 1080 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1081: UI contract checkpoint 1081 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1082: UI contract checkpoint 1082 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1083: UI contract checkpoint 1083 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1084: UI contract checkpoint 1084 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1085: UI contract checkpoint 1085 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1086: UI contract checkpoint 1086 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1087: UI contract checkpoint 1087 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1088: UI contract checkpoint 1088 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1089: UI contract checkpoint 1089 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1090: UI contract checkpoint 1090 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1091: UI contract checkpoint 1091 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1092: UI contract checkpoint 1092 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1093: UI contract checkpoint 1093 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1094: UI contract checkpoint 1094 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1095: UI contract checkpoint 1095 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1096: UI contract checkpoint 1096 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1097: UI contract checkpoint 1097 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1098: UI contract checkpoint 1098 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1099: UI contract checkpoint 1099 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1100: UI contract checkpoint 1100 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1101: UI contract checkpoint 1101 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1102: UI contract checkpoint 1102 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1103: UI contract checkpoint 1103 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1104: UI contract checkpoint 1104 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1105: UI contract checkpoint 1105 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1106: UI contract checkpoint 1106 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1107: UI contract checkpoint 1107 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1108: UI contract checkpoint 1108 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1109: UI contract checkpoint 1109 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1110: UI contract checkpoint 1110 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1111: UI contract checkpoint 1111 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1112: UI contract checkpoint 1112 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1113: UI contract checkpoint 1113 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1114: UI contract checkpoint 1114 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1115: UI contract checkpoint 1115 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1116: UI contract checkpoint 1116 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1117: UI contract checkpoint 1117 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1118: UI contract checkpoint 1118 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1119: UI contract checkpoint 1119 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1120: UI contract checkpoint 1120 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1121: UI contract checkpoint 1121 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1122: UI contract checkpoint 1122 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1123: UI contract checkpoint 1123 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1124: UI contract checkpoint 1124 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1125: UI contract checkpoint 1125 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1126: UI contract checkpoint 1126 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1127: UI contract checkpoint 1127 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1128: UI contract checkpoint 1128 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1129: UI contract checkpoint 1129 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1130: UI contract checkpoint 1130 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1131: UI contract checkpoint 1131 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1132: UI contract checkpoint 1132 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1133: UI contract checkpoint 1133 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1134: UI contract checkpoint 1134 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1135: UI contract checkpoint 1135 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1136: UI contract checkpoint 1136 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1137: UI contract checkpoint 1137 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1138: UI contract checkpoint 1138 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1139: UI contract checkpoint 1139 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1140: UI contract checkpoint 1140 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1141: UI contract checkpoint 1141 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1142: UI contract checkpoint 1142 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1143: UI contract checkpoint 1143 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1144: UI contract checkpoint 1144 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1145: UI contract checkpoint 1145 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1146: UI contract checkpoint 1146 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1147: UI contract checkpoint 1147 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1148: UI contract checkpoint 1148 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1149: UI contract checkpoint 1149 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1150: UI contract checkpoint 1150 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1151: UI contract checkpoint 1151 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1152: UI contract checkpoint 1152 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1153: UI contract checkpoint 1153 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1154: UI contract checkpoint 1154 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1155: UI contract checkpoint 1155 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1156: UI contract checkpoint 1156 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1157: UI contract checkpoint 1157 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1158: UI contract checkpoint 1158 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1159: UI contract checkpoint 1159 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1160: UI contract checkpoint 1160 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1161: UI contract checkpoint 1161 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1162: UI contract checkpoint 1162 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1163: UI contract checkpoint 1163 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1164: UI contract checkpoint 1164 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1165: UI contract checkpoint 1165 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1166: UI contract checkpoint 1166 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1167: UI contract checkpoint 1167 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1168: UI contract checkpoint 1168 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1169: UI contract checkpoint 1169 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1170: UI contract checkpoint 1170 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1171: UI contract checkpoint 1171 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1172: UI contract checkpoint 1172 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1173: UI contract checkpoint 1173 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1174: UI contract checkpoint 1174 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1175: UI contract checkpoint 1175 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1176: UI contract checkpoint 1176 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1177: UI contract checkpoint 1177 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1178: UI contract checkpoint 1178 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1179: UI contract checkpoint 1179 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1180: UI contract checkpoint 1180 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1181: UI contract checkpoint 1181 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1182: UI contract checkpoint 1182 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1183: UI contract checkpoint 1183 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1184: UI contract checkpoint 1184 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1185: UI contract checkpoint 1185 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1186: UI contract checkpoint 1186 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1187: UI contract checkpoint 1187 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1188: UI contract checkpoint 1188 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1189: UI contract checkpoint 1189 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1190: UI contract checkpoint 1190 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1191: UI contract checkpoint 1191 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1192: UI contract checkpoint 1192 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1193: UI contract checkpoint 1193 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1194: UI contract checkpoint 1194 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1195: UI contract checkpoint 1195 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1196: UI contract checkpoint 1196 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1197: UI contract checkpoint 1197 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1198: UI contract checkpoint 1198 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1199: UI contract checkpoint 1199 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1200: UI contract checkpoint 1200 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1201: UI contract checkpoint 1201 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1202: UI contract checkpoint 1202 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1203: UI contract checkpoint 1203 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1204: UI contract checkpoint 1204 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1205: UI contract checkpoint 1205 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1206: UI contract checkpoint 1206 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1207: UI contract checkpoint 1207 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1208: UI contract checkpoint 1208 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1209: UI contract checkpoint 1209 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1210: UI contract checkpoint 1210 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1211: UI contract checkpoint 1211 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1212: UI contract checkpoint 1212 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1213: UI contract checkpoint 1213 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1214: UI contract checkpoint 1214 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1215: UI contract checkpoint 1215 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1216: UI contract checkpoint 1216 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1217: UI contract checkpoint 1217 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1218: UI contract checkpoint 1218 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1219: UI contract checkpoint 1219 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1220: UI contract checkpoint 1220 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1221: UI contract checkpoint 1221 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1222: UI contract checkpoint 1222 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1223: UI contract checkpoint 1223 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1224: UI contract checkpoint 1224 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1225: UI contract checkpoint 1225 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1226: UI contract checkpoint 1226 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1227: UI contract checkpoint 1227 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1228: UI contract checkpoint 1228 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1229: UI contract checkpoint 1229 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1230: UI contract checkpoint 1230 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1231: UI contract checkpoint 1231 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1232: UI contract checkpoint 1232 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1233: UI contract checkpoint 1233 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1234: UI contract checkpoint 1234 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1235: UI contract checkpoint 1235 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1236: UI contract checkpoint 1236 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1237: UI contract checkpoint 1237 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1238: UI contract checkpoint 1238 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1239: UI contract checkpoint 1239 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1240: UI contract checkpoint 1240 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1241: UI contract checkpoint 1241 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1242: UI contract checkpoint 1242 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1243: UI contract checkpoint 1243 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1244: UI contract checkpoint 1244 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1245: UI contract checkpoint 1245 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1246: UI contract checkpoint 1246 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1247: UI contract checkpoint 1247 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1248: UI contract checkpoint 1248 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1249: UI contract checkpoint 1249 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1250: UI contract checkpoint 1250 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1251: UI contract checkpoint 1251 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1252: UI contract checkpoint 1252 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1253: UI contract checkpoint 1253 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1254: UI contract checkpoint 1254 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1255: UI contract checkpoint 1255 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1256: UI contract checkpoint 1256 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1257: UI contract checkpoint 1257 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1258: UI contract checkpoint 1258 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1259: UI contract checkpoint 1259 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1260: UI contract checkpoint 1260 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1261: UI contract checkpoint 1261 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1262: UI contract checkpoint 1262 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1263: UI contract checkpoint 1263 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1264: UI contract checkpoint 1264 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1265: UI contract checkpoint 1265 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1266: UI contract checkpoint 1266 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1267: UI contract checkpoint 1267 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1268: UI contract checkpoint 1268 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1269: UI contract checkpoint 1269 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1270: UI contract checkpoint 1270 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1271: UI contract checkpoint 1271 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1272: UI contract checkpoint 1272 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1273: UI contract checkpoint 1273 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1274: UI contract checkpoint 1274 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1275: UI contract checkpoint 1275 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1276: UI contract checkpoint 1276 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1277: UI contract checkpoint 1277 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1278: UI contract checkpoint 1278 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1279: UI contract checkpoint 1279 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1280: UI contract checkpoint 1280 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1281: UI contract checkpoint 1281 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1282: UI contract checkpoint 1282 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1283: UI contract checkpoint 1283 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1284: UI contract checkpoint 1284 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1285: UI contract checkpoint 1285 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1286: UI contract checkpoint 1286 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1287: UI contract checkpoint 1287 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1288: UI contract checkpoint 1288 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1289: UI contract checkpoint 1289 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1290: UI contract checkpoint 1290 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1291: UI contract checkpoint 1291 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1292: UI contract checkpoint 1292 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1293: UI contract checkpoint 1293 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1294: UI contract checkpoint 1294 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1295: UI contract checkpoint 1295 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1296: UI contract checkpoint 1296 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1297: UI contract checkpoint 1297 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1298: UI contract checkpoint 1298 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1299: UI contract checkpoint 1299 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1300: UI contract checkpoint 1300 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1301: UI contract checkpoint 1301 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1302: UI contract checkpoint 1302 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1303: UI contract checkpoint 1303 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1304: UI contract checkpoint 1304 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1305: UI contract checkpoint 1305 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1306: UI contract checkpoint 1306 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1307: UI contract checkpoint 1307 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1308: UI contract checkpoint 1308 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1309: UI contract checkpoint 1309 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1310: UI contract checkpoint 1310 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1311: UI contract checkpoint 1311 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1312: UI contract checkpoint 1312 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1313: UI contract checkpoint 1313 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1314: UI contract checkpoint 1314 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1315: UI contract checkpoint 1315 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1316: UI contract checkpoint 1316 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1317: UI contract checkpoint 1317 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1318: UI contract checkpoint 1318 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1319: UI contract checkpoint 1319 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1320: UI contract checkpoint 1320 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1321: UI contract checkpoint 1321 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1322: UI contract checkpoint 1322 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1323: UI contract checkpoint 1323 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1324: UI contract checkpoint 1324 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1325: UI contract checkpoint 1325 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1326: UI contract checkpoint 1326 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1327: UI contract checkpoint 1327 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1328: UI contract checkpoint 1328 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1329: UI contract checkpoint 1329 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1330: UI contract checkpoint 1330 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1331: UI contract checkpoint 1331 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1332: UI contract checkpoint 1332 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1333: UI contract checkpoint 1333 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1334: UI contract checkpoint 1334 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1335: UI contract checkpoint 1335 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1336: UI contract checkpoint 1336 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1337: UI contract checkpoint 1337 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1338: UI contract checkpoint 1338 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1339: UI contract checkpoint 1339 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1340: UI contract checkpoint 1340 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1341: UI contract checkpoint 1341 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1342: UI contract checkpoint 1342 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1343: UI contract checkpoint 1343 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1344: UI contract checkpoint 1344 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1345: UI contract checkpoint 1345 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1346: UI contract checkpoint 1346 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1347: UI contract checkpoint 1347 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1348: UI contract checkpoint 1348 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1349: UI contract checkpoint 1349 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1350: UI contract checkpoint 1350 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1351: UI contract checkpoint 1351 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1352: UI contract checkpoint 1352 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1353: UI contract checkpoint 1353 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1354: UI contract checkpoint 1354 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1355: UI contract checkpoint 1355 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1356: UI contract checkpoint 1356 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1357: UI contract checkpoint 1357 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1358: UI contract checkpoint 1358 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1359: UI contract checkpoint 1359 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1360: UI contract checkpoint 1360 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1361: UI contract checkpoint 1361 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1362: UI contract checkpoint 1362 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1363: UI contract checkpoint 1363 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1364: UI contract checkpoint 1364 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1365: UI contract checkpoint 1365 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1366: UI contract checkpoint 1366 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1367: UI contract checkpoint 1367 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1368: UI contract checkpoint 1368 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1369: UI contract checkpoint 1369 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1370: UI contract checkpoint 1370 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1371: UI contract checkpoint 1371 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1372: UI contract checkpoint 1372 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1373: UI contract checkpoint 1373 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1374: UI contract checkpoint 1374 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1375: UI contract checkpoint 1375 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1376: UI contract checkpoint 1376 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1377: UI contract checkpoint 1377 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1378: UI contract checkpoint 1378 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1379: UI contract checkpoint 1379 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1380: UI contract checkpoint 1380 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1381: UI contract checkpoint 1381 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1382: UI contract checkpoint 1382 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1383: UI contract checkpoint 1383 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1384: UI contract checkpoint 1384 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1385: UI contract checkpoint 1385 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1386: UI contract checkpoint 1386 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1387: UI contract checkpoint 1387 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1388: UI contract checkpoint 1388 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1389: UI contract checkpoint 1389 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1390: UI contract checkpoint 1390 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1391: UI contract checkpoint 1391 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1392: UI contract checkpoint 1392 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1393: UI contract checkpoint 1393 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1394: UI contract checkpoint 1394 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1395: UI contract checkpoint 1395 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1396: UI contract checkpoint 1396 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1397: UI contract checkpoint 1397 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1398: UI contract checkpoint 1398 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1399: UI contract checkpoint 1399 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1400: UI contract checkpoint 1400 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1401: UI contract checkpoint 1401 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1402: UI contract checkpoint 1402 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1403: UI contract checkpoint 1403 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1404: UI contract checkpoint 1404 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1405: UI contract checkpoint 1405 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1406: UI contract checkpoint 1406 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1407: UI contract checkpoint 1407 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1408: UI contract checkpoint 1408 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1409: UI contract checkpoint 1409 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1410: UI contract checkpoint 1410 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1411: UI contract checkpoint 1411 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1412: UI contract checkpoint 1412 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1413: UI contract checkpoint 1413 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1414: UI contract checkpoint 1414 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1415: UI contract checkpoint 1415 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1416: UI contract checkpoint 1416 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1417: UI contract checkpoint 1417 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1418: UI contract checkpoint 1418 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1419: UI contract checkpoint 1419 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1420: UI contract checkpoint 1420 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1421: UI contract checkpoint 1421 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1422: UI contract checkpoint 1422 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1423: UI contract checkpoint 1423 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1424: UI contract checkpoint 1424 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1425: UI contract checkpoint 1425 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1426: UI contract checkpoint 1426 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1427: UI contract checkpoint 1427 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1428: UI contract checkpoint 1428 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1429: UI contract checkpoint 1429 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1430: UI contract checkpoint 1430 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1431: UI contract checkpoint 1431 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1432: UI contract checkpoint 1432 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1433: UI contract checkpoint 1433 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1434: UI contract checkpoint 1434 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1435: UI contract checkpoint 1435 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1436: UI contract checkpoint 1436 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1437: UI contract checkpoint 1437 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1438: UI contract checkpoint 1438 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1439: UI contract checkpoint 1439 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1440: UI contract checkpoint 1440 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1441: UI contract checkpoint 1441 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1442: UI contract checkpoint 1442 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1443: UI contract checkpoint 1443 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1444: UI contract checkpoint 1444 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1445: UI contract checkpoint 1445 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1446: UI contract checkpoint 1446 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1447: UI contract checkpoint 1447 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1448: UI contract checkpoint 1448 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1449: UI contract checkpoint 1449 remains comments-only and runtime-neutral.
+-- APHELION FEATURE MATRIX 1450: UI contract checkpoint 1450 remains comments-only and runtime-neutral.
