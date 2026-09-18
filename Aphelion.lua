@@ -9491,7 +9491,7 @@ local function APHPlayItem(kind, item)
     return false
 end
 
-local UIState = {
+UIState = {
     mode = "animation", -- animation / emote / favorite
     animationPage = 1,
     emotePage = 1,
@@ -9505,7 +9505,7 @@ local UIState = {
     searchTicket = 0,
 }
 
-local Theme = {
+Theme = {
     Background = Color3.fromRGB(9, 11, 16),
     Surface = Color3.fromRGB(15, 18, 25),
     Surface2 = Color3.fromRGB(21, 25, 34),
@@ -9520,7 +9520,7 @@ local Theme = {
     Danger = Color3.fromRGB(255, 92, 110),
 }
 
-local function new(className, props, parent)
+function new(className, props, parent)
     local obj = Instance.new(className)
     for k, v in pairs(props or {}) do
         obj[k] = v
@@ -9529,11 +9529,11 @@ local function new(className, props, parent)
     return obj
 end
 
-local function round(obj, radius)
+function round(obj, radius)
     new("UICorner", {CornerRadius = UDim.new(0, radius or 12)}, obj)
 end
 
-local function stroke(obj, color, transparency, thickness)
+function stroke(obj, color, transparency, thickness)
     return new("UIStroke", {
         Color = color or Theme.Border,
         Transparency = transparency or 0,
@@ -9542,28 +9542,28 @@ local function stroke(obj, color, transparency, thickness)
     }, obj)
 end
 
-local function gradient(obj, c1, c2, rotation)
+function gradient(obj, c1, c2, rotation)
     return new("UIGradient", {
         Color = ColorSequence.new(c1 or Theme.Surface2, c2 or Theme.Surface),
         Rotation = rotation or 90,
     }, obj)
 end
 
-local function setText(label, text)
+function setText(label, text)
     label.Text = APHSafeString(text)
 end
 
-local function getBundleThumb(bundleId, size)
+function getBundleThumb(bundleId, size)
     return AphelionGetBundleThumbnail(bundleId, size or 420, size or 420)
 end
 
-local function getAssetThumb(assetId, size)
+function getAssetThumb(assetId, size)
     local id = tonumber(assetId)
     if not id then return "" end
     return "rbxthumb://type=Asset&id=" .. tostring(id) .. "&w=" .. tostring(size or 420) .. "&h=" .. tostring(size or 420)
 end
 
-local function getItemThumbnail(kind, item, size)
+function getItemThumbnail(kind, item, size)
     size = size or 420
     if type(item) ~= "table" then return "" end
 
@@ -9582,16 +9582,16 @@ local function getItemThumbnail(kind, item, size)
     return getAssetThumb(item.id, size)
 end
 
-local rebuild
+rebuild = nil
 
-local function favoriteFor(kind, item)
+function favoriteFor(kind, item)
     local ok, result = pcall(function()
         return APHIsFavorite(kind, item)
     end)
     return ok and result == true
 end
 
-local function playItem(kind, item)
+function playItem(kind, item)
     if UIState.favoriteMode then
         APHToggleFavorite(kind, item)
         task.defer(function()
@@ -9608,7 +9608,7 @@ local function playItem(kind, item)
     end
 end
 
-local Screen = new("ScreenGui", {
+Screen = new("ScreenGui", {
     Name = "FittingRoomCatalog",
     ResetOnSpawn = false,
     IgnoreGuiInset = true,
@@ -9616,7 +9616,7 @@ local Screen = new("ScreenGui", {
     DisplayOrder = 500,
 }, PlayerGui)
 
-local RootScale = new("UIScale", {Scale = 1}, Screen)
+RootScale = new("UIScale", {Scale = 1}, Screen)
 local function updateScale()
     local cam = workspace.CurrentCamera
     if not cam then return end
@@ -9715,7 +9715,7 @@ local TabLayout = new("UIListLayout", {
 }, Tabs)
 
 local TabButtons = {}
-local refreshTabStyle
+refreshTabStyle = nil
 local function addTab(id, title)
     local b = new("TextButton", {
         Name = id,
@@ -9754,14 +9754,14 @@ end
 Tabs:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeTopAndTabs)
 Top:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeTopAndTabs)
 
-local Tools = new("Frame", {
+Tools = new("Frame", {
     Name = "Tools",
     Size = UDim2.new(1, -20, 0, 46),
     Position = UDim2.fromOffset(10, 120),
     BackgroundTransparency = 1,
 }, Main)
 
-local SearchBox = new("TextBox", {
+SearchBox = new("TextBox", {
     Name = "Search",
     Size = UDim2.new(1, -150, 1, 0),
     Position = UDim2.fromOffset(0, 0),
@@ -9779,7 +9779,7 @@ round(SearchBox, 12)
 stroke(SearchBox, Theme.Border, 0.2, 1)
 new("UIPadding", {PaddingLeft = UDim.new(0, 15), PaddingRight = UDim.new(0, 12)}, SearchBox)
 
-local FavModeBtn = new("TextButton", {
+FavModeBtn = new("TextButton", {
     Name = "FavoriteMode",
     AutoButtonColor = false,
     Size = UDim2.fromOffset(140, 46),
@@ -9793,7 +9793,7 @@ local FavModeBtn = new("TextButton", {
 round(FavModeBtn, 12)
 stroke(FavModeBtn, Theme.Border, 0.25, 1)
 
-local function resizeTools()
+function resizeTools()
     local w = Tools.AbsoluteSize.X
     local favW = math.clamp(math.floor(w * 0.34), 112, 140)
     FavModeBtn.Size = UDim2.fromOffset(favW, 46)
@@ -9805,14 +9805,14 @@ end
 
 Tools:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeTools)
 
-local Info = new("Frame", {
+Info = new("Frame", {
     Name = "Info",
     Size = UDim2.new(1, -20, 0, 30),
     Position = UDim2.fromOffset(10, 172),
     BackgroundTransparency = 1,
 }, Main)
 
-local Status = new("TextLabel", {
+Status = new("TextLabel", {
     Size = UDim2.new(1, -145, 1, 0),
     BackgroundTransparency = 1,
     Text = "Loading catalog...",
@@ -9822,15 +9822,15 @@ local Status = new("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left,
 }, Info)
 
-local Utility = new("Frame", {
+Utility = new("Frame", {
     Size = UDim2.fromOffset(138, 30),
     AnchorPoint = Vector2.new(1, 0),
     Position = UDim2.new(1, 0, 0, 0),
     BackgroundTransparency = 1,
 }, Info)
-local UtilLayout = new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right, Padding = UDim.new(0, 6)}, Utility)
+UtilLayout = new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right, Padding = UDim.new(0, 6)}, Utility)
 
-local RandomBtn = new("TextButton", {
+RandomBtn = new("TextButton", {
     AutoButtonColor = false,
     Size = UDim2.fromOffset(65, 30),
     BackgroundColor3 = Theme.Surface2,
@@ -9841,7 +9841,7 @@ local RandomBtn = new("TextButton", {
 }, Utility)
 round(RandomBtn, 9)
 
-local StopBtn = new("TextButton", {
+StopBtn = new("TextButton", {
     AutoButtonColor = false,
     Size = UDim2.fromOffset(65, 30),
     BackgroundColor3 = Color3.fromRGB(39, 24, 31),
@@ -9852,7 +9852,7 @@ local StopBtn = new("TextButton", {
 }, Utility)
 round(StopBtn, 9)
 
-local List = new("ScrollingFrame", {
+List = new("ScrollingFrame", {
     Name = "Catalog",
     Size = UDim2.new(1, -20, 1, -270),
     Position = UDim2.fromOffset(10, 207),
@@ -9865,37 +9865,37 @@ local List = new("ScrollingFrame", {
     ScrollBarImageColor3 = Theme.Accent,
 }, Main)
 
-local ListPad = new("UIPadding", {
+ListPad = new("UIPadding", {
     PaddingLeft = UDim.new(0, 1), PaddingRight = UDim.new(0, 1),
     PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 6),
 }, List)
 
-local Grid = new("UIGridLayout", {
+Grid = new("UIGridLayout", {
     SortOrder = Enum.SortOrder.LayoutOrder,
     CellPadding = UDim2.fromOffset(8, 8),
     CellSize = UDim2.fromOffset(260, 116),
 }, List)
 
-local Bottom = new("Frame", {
+Bottom = new("Frame", {
     Size = UDim2.new(1, -20, 0, 44),
     Position = UDim2.new(0, 10, 1, -54),
     BackgroundTransparency = 1,
 }, Main)
 
-local PrevBtn = new("TextButton", {
+PrevBtn = new("TextButton", {
     AutoButtonColor = false, Size = UDim2.fromOffset(82, 44),
     BackgroundColor3 = Theme.Surface2, Text = "‹  PREV", TextColor3 = Theme.Text,
     Font = Enum.Font.GothamBold, TextSize = 10,
 }, Bottom)
 round(PrevBtn, 11)
 
-local PageLabel = new("TextLabel", {
+PageLabel = new("TextLabel", {
     Size = UDim2.new(1, -180, 1, 0), Position = UDim2.fromOffset(90, 0),
     BackgroundTransparency = 1, Text = "PAGE 1 / 1", TextColor3 = Theme.Muted,
     Font = Enum.Font.GothamBold, TextSize = 11,
 }, Bottom)
 
-local NextBtn = new("TextButton", {
+NextBtn = new("TextButton", {
     AutoButtonColor = false, Size = UDim2.fromOffset(82, 44),
     AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0),
     BackgroundColor3 = Theme.Surface2, Text = "NEXT  ›", TextColor3 = Theme.Text,
@@ -9903,7 +9903,7 @@ local NextBtn = new("TextButton", {
 }, Bottom)
 round(NextBtn, 11)
 
-local FloatingOpen = new("TextButton", {
+FloatingOpen = new("TextButton", {
     Name = "OpenButton",
     Visible = false,
     AnchorPoint = Vector2.new(1, 1),
@@ -9918,7 +9918,7 @@ local FloatingOpen = new("TextButton", {
 round(FloatingOpen, 28)
 stroke(FloatingOpen, Theme.Accent, 0.1, 1.5)
 
-local function resizeGrid()
+function resizeGrid()
     local width = math.max(200, List.AbsoluteSize.X - 2)
     local gap = 8
     local minWidth = 188
@@ -9933,7 +9933,7 @@ resizeTools()
 resizeTopAndTabs()
 List:GetPropertyChangedSignal("AbsoluteSize"):Connect(resizeGrid)
 
-local function clearCards()
+function clearCards()
     for _, child in ipairs(List:GetChildren()) do
         if child:IsA("Frame") or child:IsA("TextButton") then
             child:Destroy()
@@ -9941,7 +9941,7 @@ local function clearCards()
     end
 end
 
-local function makeCard(kind, item, layoutOrder)
+function makeCard(kind, item, layoutOrder)
     local card = new("Frame", {
         LayoutOrder = layoutOrder,
         BackgroundColor3 = Theme.Card,
@@ -10076,7 +10076,7 @@ local function makeCard(kind, item, layoutOrder)
     return card, thumb
 end
 
-local function favoriteList()
+function favoriteList()
     local out = {}
     for _, item in ipairs(State.favoriteAnimations or {}) do
         table.insert(out, {kind = "animation", item = item})
@@ -10087,7 +10087,7 @@ local function favoriteList()
     return out
 end
 
-local function getViewData()
+function getViewData()
     if UIState.mode == "favorite" then
         local source = favoriteList()
         local q = string.lower(UIState.search or "")
@@ -10108,13 +10108,13 @@ local function getViewData()
     return APHGetCurrentList(kind)
 end
 
-local function getPage()
+function getPage()
     if UIState.mode == "animation" then return UIState.animationPage end
     if UIState.mode == "emote" then return UIState.emotePage end
     return UIState.favoritePage
 end
 
-local function setPage(page)
+function setPage(page)
     if UIState.mode == "animation" then UIState.animationPage = page
     elseif UIState.mode == "emote" then UIState.emotePage = page
     else UIState.favoritePage = page end
@@ -10276,7 +10276,7 @@ StopBtn.Activated:Connect(function()
     pcall(stopCurrentEmote)
 end)
 
-local function setMinimized(v)
+function setMinimized(v)
     UIState.minimized = v == true
     Main.Visible = not UIState.minimized
     FloatingOpen.Visible = UIState.minimized
@@ -10375,7 +10375,7 @@ AphelionSafeNotify(
     practical so it does not overwrite the original animation backend.
 ============================================================================]]
 
-local APHELION_FEATURES = {
+APHELION_FEATURES = {
     Version = "5.0.0",
     Open = false,
     ActiveTab = "Mix",
@@ -10422,7 +10422,7 @@ local APHELION_FEATURES = {
     },
 }
 
-local APHX_SLOT_ORDER = {
+APHX_SLOT_ORDER = {
     "idle",
     "walk",
     "run",
@@ -10433,7 +10433,7 @@ local APHX_SLOT_ORDER = {
     "swim",
 }
 
-local APHX_SLOT_DEFS = {
+APHX_SLOT_DEFS = {
     idle = {
         Label = "IDLE",
         CategoryNames = {"idle"},
@@ -10484,14 +10484,14 @@ local APHX_SLOT_DEFS = {
     },
 }
 
-local function APHX_String(value)
+function APHX_String(value)
     if value == nil then
         return ""
     end
     return tostring(value)
 end
 
-local function APHX_Number(value, fallback)
+function APHX_Number(value, fallback)
     local n = tonumber(value)
     if n == nil then
         return fallback
@@ -10499,15 +10499,15 @@ local function APHX_Number(value, fallback)
     return n
 end
 
-local function APHX_Trim(value)
+function APHX_Trim(value)
     return APHX_String(value):match("^%s*(.-)%s*$") or ""
 end
 
-local function APHX_Lower(value)
+function APHX_Lower(value)
     return string.lower(APHX_String(value))
 end
 
-local function APHX_NormalizeId(value)
+function APHX_NormalizeId(value)
     local text = APHX_String(value)
     text = text:gsub("rbxassetid://", "")
     text = text:gsub("http://www%.roblox%.com/asset/%?id=", "")
@@ -10515,19 +10515,19 @@ local function APHX_NormalizeId(value)
     return tonumber(text)
 end
 
-local function APHX_IsPositiveId(value)
+function APHX_IsPositiveId(value)
     local id = APHX_NormalizeId(value)
     return id ~= nil and id > 0
 end
 
-local function APHX_SafeCall(fn, ...)
+function APHX_SafeCall(fn, ...)
     if type(fn) ~= "function" then
         return false, nil
     end
     return pcall(fn, ...)
 end
 
-local function APHX_DeepCopy(value)
+function APHX_DeepCopy(value)
     if type(value) ~= "table" then
         return value
     end
@@ -10538,7 +10538,7 @@ local function APHX_DeepCopy(value)
     return copy
 end
 
-local function APHX_ArrayContains(array, value)
+function APHX_ArrayContains(array, value)
     if type(array) ~= "table" then
         return false
     end
@@ -10550,7 +10550,7 @@ local function APHX_ArrayContains(array, value)
     return false
 end
 
-local function APHX_TableLength(tbl)
+function APHX_TableLength(tbl)
     if type(tbl) ~= "table" then
         return 0
     end
@@ -10561,7 +10561,7 @@ local function APHX_TableLength(tbl)
     return count
 end
 
-local function APHX_StableSort(array, comparator)
+function APHX_StableSort(array, comparator)
     if type(array) ~= "table" then
         return {}
     end
@@ -10569,11 +10569,11 @@ local function APHX_StableSort(array, comparator)
     return array
 end
 
-local function APHX_SortText(a, b)
+function APHX_SortText(a, b)
     return APHX_Lower(a) < APHX_Lower(b)
 end
 
-local function APHX_SlotLabel(slot)
+function APHX_SlotLabel(slot)
     local def = APHX_SLOT_DEFS[slot]
     if def then
         return def.Label
@@ -10581,7 +10581,7 @@ local function APHX_SlotLabel(slot)
     return string.upper(APHX_String(slot))
 end
 
-local function APHX_CategoryMatches(category, aliases)
+function APHX_CategoryMatches(category, aliases)
     local cat = APHX_Lower(category):gsub("%s+", "")
     for _, alias in ipairs(aliases or {}) do
         if cat == APHX_Lower(alias):gsub("%s+", "") then
@@ -10591,14 +10591,14 @@ local function APHX_CategoryMatches(category, aliases)
     return false
 end
 
-local function APHX_MappingAnimationId(mapping)
+function APHX_MappingAnimationId(mapping)
     if type(mapping) ~= "table" then
         return nil
     end
     return APHX_NormalizeId(mapping.animationId)
 end
 
-local function APHX_CatalogAnimations()
+function APHX_CatalogAnimations()
     local source = State.originalAnimationsData
     if type(source) ~= "table" or #source == 0 then
         source = State.animationsData
@@ -10609,7 +10609,7 @@ local function APHX_CatalogAnimations()
     return source
 end
 
-local function APHX_IsBundleCandidate(item)
+function APHX_IsBundleCandidate(item)
     if type(item) ~= "table" then
         return false
     end
@@ -10622,7 +10622,7 @@ local function APHX_IsBundleCandidate(item)
     return false
 end
 
-local function APHX_GetBundleCandidates(query)
+function APHX_GetBundleCandidates(query)
     query = APHX_Lower(APHX_Trim(query))
     local source = APHX_CatalogAnimations()
     local list = {}
@@ -10657,7 +10657,7 @@ local function APHX_GetBundleCandidates(query)
     return list
 end
 
-local function APHX_BundleCacheKey(item)
+function APHX_BundleCacheKey(item)
     if type(item) ~= "table" then
         return ""
     end
@@ -10667,7 +10667,7 @@ local function APHX_BundleCacheKey(item)
     return "bundle:" .. APHX_String(item.id)
 end
 
-local function APHX_GetResolvedMappings(item)
+function APHX_GetResolvedMappings(item)
     if type(item) ~= "table" then
         return {}
     end
@@ -10719,7 +10719,7 @@ local function APHX_GetResolvedMappings(item)
     return mappings
 end
 
-local function APHX_FindMappingsForSlot(mappings, slot)
+function APHX_FindMappingsForSlot(mappings, slot)
     local def = APHX_SLOT_DEFS[slot]
     if not def or type(mappings) ~= "table" then
         return {}
@@ -10751,7 +10751,7 @@ local function APHX_FindMappingsForSlot(mappings, slot)
     return matches
 end
 
-local function APHX_ExtractSlotValue(item, slot)
+function APHX_ExtractSlotValue(item, slot)
     local mappings = APHX_GetResolvedMappings(item)
     local matches = APHX_FindMappingsForSlot(mappings, slot)
     if #matches == 0 then
@@ -10760,7 +10760,7 @@ local function APHX_ExtractSlotValue(item, slot)
     return matches[1], matches
 end
 
-local function APHX_NewEmptyMix()
+function APHX_NewEmptyMix()
     local mix = {
         idle = {Animation1 = 0, Animation2 = 0},
         walk = {WalkAnim = 0},
@@ -10786,7 +10786,7 @@ local function APHX_NewEmptyMix()
     return mix
 end
 
-local function APHX_MixHasContent(mix)
+function APHX_MixHasContent(mix)
     if type(mix) ~= "table" then
         return false
     end
@@ -10803,7 +10803,7 @@ local function APHX_MixHasContent(mix)
     return false
 end
 
-local function APHX_MixFilledSlots(mix)
+function APHX_MixFilledSlots(mix)
     local total = 0
     for _, slot in ipairs(APHX_SLOT_ORDER) do
         local data = type(mix) == "table" and mix[slot] or nil
@@ -10823,11 +10823,11 @@ local function APHX_MixFilledSlots(mix)
     return total
 end
 
-local function APHX_CopyMix(mix)
+function APHX_CopyMix(mix)
     return APHX_DeepCopy(mix)
 end
 
-local function APHX_PushMixSnapshot(reason)
+function APHX_PushMixSnapshot(reason)
     local snapshot = {
         Reason = reason or "edit",
         Timestamp = os.time(),
@@ -10839,7 +10839,7 @@ local function APHX_PushMixSnapshot(reason)
     end
 end
 
-local function APHX_UndoMix()
+function APHX_UndoMix()
     local history = APHELION_FEATURES.Mix.PreviousSnapshots
     local snapshot = history[#history]
     if not snapshot then
@@ -10851,13 +10851,13 @@ local function APHX_UndoMix()
     return true
 end
 
-local function APHX_ResetMix()
+function APHX_ResetMix()
     APHX_PushMixSnapshot("reset")
     APHELION_FEATURES.Mix.Slots = APHX_NewEmptyMix()
     APHELION_FEATURES.Mix.Revision += 1
 end
 
-local function APHX_CopySourceIntoSlot(item, slot)
+function APHX_CopySourceIntoSlot(item, slot)
     if not item or not APHX_SLOT_DEFS[slot] then
         return false, "Invalid source or slot"
     end
@@ -10925,7 +10925,7 @@ local function APHX_CopySourceIntoSlot(item, slot)
     return true, APHX_SlotLabel(slot) .. " ← " .. sourceName
 end
 
-local function APHX_ClearMixSlot(slot)
+function APHX_ClearMixSlot(slot)
     if not APHX_SLOT_DEFS[slot] then
         return false
     end
@@ -10958,7 +10958,7 @@ local function APHX_ClearMixSlot(slot)
     return true
 end
 
-local function APHX_FillMissingFromItem(item)
+function APHX_FillMissingFromItem(item)
     if not item then
         return 0
     end
@@ -10982,7 +10982,7 @@ local function APHX_FillMissingFromItem(item)
     return math.max(0, after - before)
 end
 
-local function APHX_ExtractSetSources(setData)
+function APHX_ExtractSetSources(setData)
     local out = {}
     if type(setData) ~= "table" then
         return out
@@ -11001,7 +11001,7 @@ local function APHX_ExtractSetSources(setData)
     return out
 end
 
-local function APHX_SelectMixFromExistingSet(name)
+function APHX_SelectMixFromExistingSet(name)
     local set = State.CustomAnimations
         and State.CustomAnimations.Sets
         and State.CustomAnimations.Sets[name]
@@ -11017,7 +11017,7 @@ local function APHX_SelectMixFromExistingSet(name)
     return true, "Loaded " .. name
 end
 
-local function APHX_MakeSetName(desired)
+function APHX_MakeSetName(desired)
     desired = APHX_Trim(desired)
     if desired == "" then
         desired = "My Mix"
@@ -11026,7 +11026,7 @@ local function APHX_MakeSetName(desired)
     return MakeUniqueSetName(sets, desired)
 end
 
-local function APHX_EnsureCustomAnimationState()
+function APHX_EnsureCustomAnimationState()
     State.CustomAnimations = NormalizeCustomAnimationData(State.CustomAnimations)
     if not State.CustomAnimations.Sets.Default then
         State.CustomAnimations.Sets.Default = APHX_NewEmptyMix()
@@ -11038,7 +11038,7 @@ local function APHX_EnsureCustomAnimationState()
     return State.CustomAnimations
 end
 
-local function APHX_SaveStyle(name, overwrite)
+function APHX_SaveStyle(name, overwrite)
     APHX_EnsureCustomAnimationState()
     if not APHX_MixHasContent(APHELION_FEATURES.Mix.Slots) then
         return false, "Fill at least one motion slot first"
@@ -11097,7 +11097,7 @@ local function APHX_SaveStyle(name, overwrite)
     return true, targetName
 end
 
-local function APHX_DeleteStyle(name)
+function APHX_DeleteStyle(name)
     APHX_EnsureCustomAnimationState()
     if not name or name == "Default" then
         return false, "Default cannot be deleted"
@@ -11131,7 +11131,7 @@ local function APHX_DeleteStyle(name)
     return true, "Deleted " .. name
 end
 
-local function APHX_ApplyStyle(name)
+function APHX_ApplyStyle(name)
     APHX_EnsureCustomAnimationState()
     local set = State.CustomAnimations.Sets[name]
     if not set then
@@ -11156,7 +11156,7 @@ local function APHX_ApplyStyle(name)
     return true, "Applied " .. name
 end
 
-local function APHX_SaveCurrentMixAs(desired)
+function APHX_SaveCurrentMixAs(desired)
     local ok, name = APHX_SaveStyle(desired, false)
     if ok then
         APHX_ApplyStyle(name)
@@ -11164,7 +11164,7 @@ local function APHX_SaveCurrentMixAs(desired)
     return ok, name
 end
 
-local function APHX_ExportStyle(name)
+function APHX_ExportStyle(name)
     APHX_EnsureCustomAnimationState()
     local set = State.CustomAnimations.Sets[name]
     if not set then
@@ -11185,7 +11185,7 @@ local function APHX_ExportStyle(name)
     return json
 end
 
-local function APHX_ImportStyle(jsonText, desiredName)
+function APHX_ImportStyle(jsonText, desiredName)
     local ok, decoded = APHX_SafeCall(function()
         return HttpService:JSONDecode(jsonText)
     end)
@@ -11221,7 +11221,7 @@ local function APHX_ImportStyle(jsonText, desiredName)
     return true, targetName
 end
 
-local function APHX_QueueEntry(kind, item)
+function APHX_QueueEntry(kind, item)
     if not item then
         return nil
     end
@@ -11238,7 +11238,7 @@ local function APHX_QueueEntry(kind, item)
     return entry
 end
 
-local function APHX_QueueAdd(kind, item)
+function APHX_QueueAdd(kind, item)
     local entry = APHX_QueueEntry(kind, item)
     if not entry then
         return false
@@ -11251,7 +11251,7 @@ local function APHX_QueueAdd(kind, item)
     return true
 end
 
-local function APHX_QueueRemove(index)
+function APHX_QueueRemove(index)
     index = math.floor(tonumber(index) or 0)
     if index < 1 or index > #APHELION_FEATURES.Queue.Items then
         return false
@@ -11261,13 +11261,13 @@ local function APHX_QueueRemove(index)
     return true
 end
 
-local function APHX_QueueClear()
+function APHX_QueueClear()
     APHELION_FEATURES.Queue.Items = {}
     APHELION_FEATURES.Queue.CurrentIndex = 0
     APHELION_FEATURES.Queue.Revision += 1
 end
 
-local function APHX_QueueAddRandom(count)
+function APHX_QueueAddRandom(count)
     count = math.max(1, math.floor(tonumber(count) or 1))
     local source = getViewData()
     if type(source) ~= "table" or #source == 0 then
@@ -11289,7 +11289,7 @@ local function APHX_QueueAddRandom(count)
     return added
 end
 
-local function APHX_QueueAddFavorites()
+function APHX_QueueAddFavorites()
     local added = 0
     for _, item in ipairs(State.favoriteAnimations or {}) do
         if APHX_QueueAdd("animation", item) then
@@ -11304,14 +11304,14 @@ local function APHX_QueueAddFavorites()
     return added
 end
 
-local function APHX_QueueStop()
+function APHX_QueueStop()
     APHELION_FEATURES.Queue.Playing = false
     APHELION_FEATURES.Queue.Token += 1
     pcall(stopCurrentEmote)
     pcall(stopEmotes)
 end
 
-local function APHX_QueueShuffledOrder()
+function APHX_QueueShuffledOrder()
     local order = {}
     for i = 1, #APHELION_FEATURES.Queue.Items do
         table.insert(order, i)
@@ -11323,7 +11323,7 @@ local function APHX_QueueShuffledOrder()
     return order
 end
 
-local function APHX_QueuePlay()
+function APHX_QueuePlay()
     if APHELION_FEATURES.Queue.Playing then
         return false, "Queue is already playing"
     end
@@ -11405,36 +11405,36 @@ local function APHX_QueuePlay()
     return true, "Queue started"
 end
 
-local function APHX_Notify(message, duration)
+function APHX_Notify(message, duration)
     AphelionSafeNotify("Fitting Room | Tools", APHX_String(message), duration or 3)
 end
 
-local function APHX_New(className, props, parent)
+function APHX_New(className, props, parent)
     return new(className, props, parent)
 end
 
-local function APHX_Round(obj, radius)
+function APHX_Round(obj, radius)
     if obj then
         pcall(round, obj, radius)
     end
     return obj
 end
 
-local function APHX_Stroke(obj, color, transparency, thickness)
+function APHX_Stroke(obj, color, transparency, thickness)
     if obj then
         pcall(stroke, obj, color, transparency, thickness)
     end
     return obj
 end
 
-local function APHX_Gradient(obj, c1, c2, rotation)
+function APHX_Gradient(obj, c1, c2, rotation)
     if obj then
         pcall(gradient, obj, c1, c2, rotation)
     end
     return obj
 end
 
-local function APHX_Button(parent, text, width, height)
+function APHX_Button(parent, text, width, height)
     local button = APHX_New("TextButton", {
         AutoButtonColor = false,
         Size = UDim2.fromOffset(width or 80, height or 36),
@@ -11449,7 +11449,7 @@ local function APHX_Button(parent, text, width, height)
     return button
 end
 
-local function APHX_Label(parent, text, size, color, font)
+function APHX_Label(parent, text, size, color, font)
     return APHX_New("TextLabel", {
         BackgroundTransparency = 1,
         Size = size or UDim2.new(1, 0, 0, 24),
@@ -11463,7 +11463,7 @@ local function APHX_Label(parent, text, size, color, font)
     }, parent)
 end
 
-local function APHX_MakeDivider(parent, y)
+function APHX_MakeDivider(parent, y)
     return APHX_New("Frame", {
         Position = UDim2.fromOffset(8, y or 0),
         Size = UDim2.new(1, -16, 0, 1),
@@ -11473,7 +11473,7 @@ local function APHX_MakeDivider(parent, y)
     }, parent)
 end
 
-local function APHX_CreatePrompt(parent, titleText, placeholder, defaultText)
+function APHX_CreatePrompt(parent, titleText, placeholder, defaultText)
     local overlay = APHX_New("Frame", {
         Size = UDim2.fromScale(1, 1),
         BackgroundColor3 = Color3.new(0, 0, 0),
@@ -11541,7 +11541,7 @@ local function APHX_CreatePrompt(parent, titleText, placeholder, defaultText)
     }
 end
 
-local function APHX_CreateFeaturePanel()
+function APHX_CreateFeaturePanel()
     if APHELION_FEATURES.Panel and APHELION_FEATURES.Panel.Parent then
         return APHELION_FEATURES.Panel
     end
@@ -11693,7 +11693,7 @@ function APHX_OpenTools(tabName)
     end
 end
 
-local function APHX_MixSlotValueText(slot)
+function APHX_MixSlotValueText(slot)
     local mix = APHELION_FEATURES.Mix.Slots or {}
     local data = mix[slot]
     if type(data) ~= "table" then
@@ -12465,7 +12465,7 @@ function APHX_RenderLab()
     end
 end
 
-local function APHX_WireToolButton()
+function APHX_WireToolButton()
     if not Utility or not Utility.Parent then
         return
     end
